@@ -185,35 +185,34 @@ with st.sidebar:
         default=DEFAULT_TICKERS,
     )
 
-    st.subheader("Allocation Weights")
+    st.subheader("Dollar Allocation")
 
+    # Dynamic dollar-amount input per selected ticker. The total portfolio
+    # value is now derived automatically as the sum of these per-ticker
+    # dollar amounts (no separate "Initial Investment" field needed), and
+    # each amount is passed straight through as an unnormalized "weight" --
+    # `run_var_analysis` normalizes any positive weight vector internally,
+    # so raw dollar amounts work exactly like raw percentages did.
     raw_weights: List[float] = []
     if tickers:
-        equal_share = round(100.0 / len(tickers), 2)
         for t in tickers:
-            w = st.number_input(
-                f"{t} weight (%)",
+            amt = st.number_input(
+                f"Amount invested in {t} ($)",
                 min_value=0.0,
-                max_value=100.0,
-                value=equal_share,
-                step=1.0,
-                key=f"weight_{t}",
+                value=1000.0,
+                step=100.0,
+                key=f"amount_{t}",
             )
-            raw_weights.append(w)
+            raw_weights.append(amt)
     else:
-        st.caption("Select at least one ticker above to configure weights.")
+        st.caption("Select at least one ticker above to configure dollar allocations.")
+
+    portfolio_value = float(sum(raw_weights))
 
     st.divider()
 
-    portfolio_value = st.number_input(
-        "Initial Investment ($)",
-        min_value=100.0,
-        value=10_000.0,
-        step=500.0,
-        format="%.2f",
-    )
-
     confidence_label = st.select_slider(
+
         "Confidence Level",
         options=CONFIDENCE_OPTIONS,
         value="95%",
@@ -362,3 +361,4 @@ if run_clicked or "last_result" in st.session_state:
 
 else:
     st.info("Select tickers and configure weights in the sidebar, then click **Run Analysis** to begin.")
+
