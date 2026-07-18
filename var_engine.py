@@ -22,9 +22,12 @@ Design notes:
       rolling-window returns (not a naive sqrt-time scalar on daily
       returns), while Parametric VaR uses the mathematically standard
       square-root-of-time scaling of the normal distribution's mean/std.
-    - The orchestrator returns a *unified, nested* payload -- market data,
-      portfolio-level series, and risk metrics are each cleanly namespaced
-      so the frontend never needs to reshape or derive data itself.
+    - `tickers` and `weights` are expected to arrive as clean, already
+      -structured Python lists straight from the frontend's `st.multiselect`
+      and per-ticker numeric weight inputs -- there is no comma-splitting
+      or free-text parsing performed anywhere in this module. Validation
+      still guards against malformed/edge-case input (duplicates, mismatched
+      lengths, non-positive weight sums, single-asset portfolios, etc.).
 """
 
 from __future__ import annotations
@@ -64,16 +67,15 @@ class DataFetchError(Exception):
 # ============================================================
 def validate_inputs(tickers: List[str], weights: List[float]) -> None:
     """
-    Validate that tickers and weights are well-formed and compatible.
-    Handles the single-asset edge case gracefully and guards against
-    common malformed input (whitespace, duplicates, negative/zero-sum
-    weights, mismatched counts).
+    Validate that tickers and weights (already provided as structured lists
+    by the frontend's multiselect + numeric weight widgets) are well-formed
+    and compatible. Handles the single-asset edge case gracefully.
 
     Raises:
         ValidationError: on any mismatch or invalid values.
     """
     if not tickers:
-        raise ValidationError("Please provide at least one stock ticker.")
+        raise ValidationError("Please select at least one stock ticker.")
 
     if len(tickers) != len(weights):
         raise ValidationError(
@@ -88,13 +90,8 @@ def validate_inputs(tickers: List[str], weights: List[float]) -> None:
     if weight_sum <= 0:
         raise ValidationError("Weights must sum to a positive value.")
 
-    if not np.isclose(weight_sum, 1.0, atol=1e-3):
-        raise ValidationError(
-            f"Weights must sum to 1.0 (100%). Current sum = {weight_sum:.4f}."
-        )
-
     if len(set(tickers)) != len(tickers):
-        raise ValidationError("Duplicate tickers detected. Please use unique tickers.")
+        raise ValidationError("Duplicate tickers detected. Please select unique tickers.")
 
 
 def validate_horizon(horizon_days: int) -> int:
@@ -110,6 +107,18 @@ def validate_horizon(horizon_days: int) -> int:
             f"{MAX_HORIZON_DAYS} days."
         )
     return horizon_days
+
+
+def normalize_weights(weights: List[float]) -> List[float]:
+    """
+    Normalize an arbitrary list of non-negative weight values (e.g. raw
+    percentage inputs from per-ticker sliders that may not sum exactly to
+    100) into fractions that sum to 1.0. Robust to a single-asset portfolio.
+    """
+    total = sum(weights)
+    if total <= 0:
+        raise ValidationError("Weights must sum to a positive value.")
+    return [w / total for w in weights]
 
 
 # ============================================================
@@ -146,8 +155,8 @@ def download_prices(tickers: List[str], period: str) -> pd.DataFrame:
 
     if data.empty:
         raise DataFetchError(
-            "No price data was returned. Please check that your ticker "
-            "symbols are valid and try again."
+            "No price data was returned. Please check that your selected "
+            "tickers are valid and try again."
         )
 
     # Detect tickers that came back entirely empty (invalid symbol).
@@ -221,9 +230,6 @@ def _compounded_rolling_window_returns(
     """
     n_obs = len(portfolio_returns)
 
-    # Need at least horizon_days+1 observations to form a single window;
-    # require a modest minimum of usable windows for a meaningful empirical
-    # distribution (at least 5, when available).
     min_required = horizon_days + 1
     if n_obs < min_required or n_obs - horizon_days < 5:
         # Not enough history for genuine rolling windows -> fall back to the
@@ -231,9 +237,6 @@ def _compounded_rolling_window_returns(
         return portfolio_returns.values * np.sqrt(horizon_days)
 
     growth = (1.0 + portfolio_returns).values
-    # Rolling product of `horizon_days` consecutive growth factors, using a
-    # log-sum-exp style approach for numerical stability, then compounded
-    # back into a simple return.
     log_growth = np.log(growth)
     cumulative_log = np.concatenate(([0.0], np.cumsum(log_growth)))
     window_log_returns = cumulative_log[horizon_days:] - cumulative_log[:-horizon_days]
@@ -267,7 +270,6 @@ def historical_var(
             portfolio_returns, horizon_days
         )
 
-    # The (1 - confidence) percentile of the loss distribution.
     var_pct = -np.percentile(scaled_returns, (1 - confidence_level) * 100)
     var_pct = max(var_pct, 0.0)
     var_dollar = var_pct * portfolio_value
@@ -290,11 +292,10 @@ def parametric_var(
     the i.i.d. returns assumption. This scaling remains numerically stable
     even at macro-scale horizons (up to 100 days).
     """
-    mu = portfolio_returns.mean()          # mean daily portfolio return
-    sigma = portfolio_returns.std()        # daily portfolio volatility (std dev)
-    z_score = norm.ppf(1 - confidence_level)  # inverse normal CDF, e.g. -1.645 for 95%
+    mu = portfolio_returns.mean()
+    sigma = portfolio_returns.std()
+    z_score = norm.ppf(1 - confidence_level)
 
-    # VaR% = -(mu*t + z*sigma*sqrt(t)); z is negative so this yields a positive loss.
     var_pct = -(mu * horizon_days + z_score * sigma * np.sqrt(horizon_days))
     var_pct = max(var_pct, 0.0)
     var_dollar = var_pct * portfolio_value
@@ -316,20 +317,18 @@ def monte_carlo_var(
     historical mean vector and covariance matrix of asset returns (scaled to
     the chosen time horizon), then projects each simulated path onto the
     portfolio via the weight vector and takes the empirical percentile of
-    the resulting simulated portfolio returns.
+    the resulting simulated portfolio returns. Works cleanly for a single
+    asset too, since the covariance matrix collapses to a 1x1 matrix.
     """
     rng = np.random.default_rng(seed)
-    mean_returns = returns.mean().values   # per-asset average daily return
-    cov_matrix = returns.cov().values       # per-asset covariance matrix (n x n)
+    mean_returns = returns.mean().values
+    cov_matrix = returns.cov().values
 
-    # Draw `num_simulations` random asset-return vectors from N(mu*t, cov*t).
-    # Works for a single asset too: cov_matrix collapses to a 1x1 matrix.
     simulated_asset_returns = rng.multivariate_normal(
         mean_returns * horizon_days,
         cov_matrix * horizon_days,
         size=num_simulations,
     )
-    # Project simulated asset returns onto the portfolio via weights.
     simulated_portfolio_returns = simulated_asset_returns @ weights
 
     var_pct = -np.percentile(simulated_portfolio_returns, (1 - confidence_level) * 100)
@@ -370,6 +369,10 @@ def run_var_analysis(
     """
     End-to-end Finfy risk pipeline: validate -> fetch -> compute -> package.
 
+    `tickers` and `weights` are expected to be clean Python lists sourced
+    directly from the frontend's `st.multiselect` ticker picker and
+    per-ticker numeric weight widgets -- no text parsing happens here.
+
     Args:
         status_callback: optional callable(str) invoked with human-readable
             engineering-phrase milestones as the pipeline progresses (used
@@ -381,16 +384,16 @@ def run_var_analysis(
             "success": bool,
             "error": Optional[str],
             "market_data": {
-                "prices": pd.DataFrame,             # raw close prices
-                "normalized_prices": pd.DataFrame,   # rebased to 100
-                "asset_returns": pd.DataFrame,        # daily pct returns
+                "prices": pd.DataFrame,
+                "normalized_prices": pd.DataFrame,
+                "asset_returns": pd.DataFrame,
             },
             "portfolio": {
                 "returns": pd.Series,
                 "cumulative_returns": pd.Series,
                 "drawdown": pd.Series,
                 "tickers": List[str],
-                "weights": List[float],
+                "weights": List[float],   # normalized fractions, sum to 1.0
                 "n_observations": int,
                 "horizon_days": int,
                 "portfolio_value": float,
@@ -410,22 +413,24 @@ def run_var_analysis(
             try:
                 status_callback(message)
             except Exception:
-                pass  # Never let UI callback errors break the analysis.
+                pass
 
-    # Clean up ticker input (strip whitespace, uppercase, drop blanks).
-    tickers = [t.strip().upper() for t in tickers if t and t.strip()]
+    # Tickers arrive pre-cleaned from st.multiselect, but we defensively
+    # normalize case/whitespace in case of programmatic callers.
+    tickers = [t.strip().upper() for t in tickers if t and str(t).strip()]
 
     try:
         _report("Finfy Core: Validating portfolio configuration...")
         horizon_days = validate_horizon(horizon_days)
         validate_inputs(tickers, weights)
+        normalized_weights = normalize_weights(weights)
 
         _report("Finfy Core: Accessing institutional equity endpoints via yfinance...")
         prices = download_prices(tickers, period)
 
         _report("Finfy Math: Reindexing historical price series and asset weights...")
         returns = compute_returns(prices)
-        weights_arr = np.array(weights, dtype=float)
+        weights_arr = np.array(normalized_weights, dtype=float)
         portfolio_returns = compute_portfolio_returns(returns, weights_arr)
         normalized_prices = compute_normalized_prices(prices)
 
@@ -468,7 +473,7 @@ def run_var_analysis(
                     "cumulative_returns": cumulative_returns,
                     "drawdown": drawdown,
                     "tickers": tickers,
-                    "weights": weights,
+                    "weights": normalized_weights,
                     "n_observations": int(len(portfolio_returns)),
                     "horizon_days": horizon_days,
                     "portfolio_value": float(portfolio_value),
