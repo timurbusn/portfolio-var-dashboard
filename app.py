@@ -301,7 +301,8 @@ if run_clicked or "last_result" in st.session_state:
             delta_color="inverse",
         )
     with col4:
-        st.metric("Portfolio Value", f"${portfolio['portfolio_value']:,.2f}")
+        st.metric(label="Total Portfolio Value", value=f"${portfolio_value:,.2f}")
+
     with col5:
         st.metric("Observations", f"{portfolio['n_observations']:,}")
 
