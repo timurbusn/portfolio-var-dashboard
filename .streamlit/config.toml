@@ -1,0 +1,8 @@
+[theme]
+base="dark"
+primaryColor="#00E676"          # High-end neon financial green
+backgroundColor="#0A0F1D"      # Premium slate/navy dark background
+secondaryBackgroundColor="#131C33" # Color for sidebar panels & background cards
+textColor="#FFFFFF"
+font="monospace"               # Forces a precise, quantitative terminal look
+baseRadius="large"             # Creates clean, modern rounded input frames
