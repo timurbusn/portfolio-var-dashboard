@@ -162,17 +162,50 @@ def inject_finfy_theme() -> None:
             background: radial-gradient(circle at 15% 0%, #111c3a 0%, {BG_DEEP} 55%);
         }}
 
-        html, body, [class*="css"] {{
+        /* NOTE: intentionally scoped -- do NOT use a blanket [class*="css"]
+           wildcard selector here. Streamlit's own internal icon elements
+           (e.g. the sidebar collapse/expand control) rely on Material
+           Symbols icon-font ligatures like "keyboard_double_arrow_right"
+           to render as glyphs. A wildcard font-family override strips
+           that icon font and causes the raw ligature text to leak onto
+           the page as literal text. Scope to real text-bearing containers
+           only, and explicitly exclude icon containers. */
+        html, body, .stApp, .stApp p, .stApp span, .stApp div, .stApp label,
+        .stApp li, .stMarkdown, [data-testid="stMarkdownContainer"] {{
             font-family: {SANS_FONT};
+        }}
+        [data-testid="stIconMaterial"],
+        [data-testid="collapsedControl"],
+        [data-testid="collapsedControl"] * {{
+            font-family: unset !important;
         }}
 
         section[data-testid="stSidebar"] {{
             background-color: {SURFACE_SOLID};
             border-right: 1px solid {BORDER_STRONG};
         }}
-        section[data-testid="stSidebar"] * {{
+        section[data-testid="stSidebar"] p,
+        section[data-testid="stSidebar"] span,
+        section[data-testid="stSidebar"] div,
+        section[data-testid="stSidebar"] label,
+        section[data-testid="stSidebar"] li {{
             font-family: {SANS_FONT};
         }}
+        section[data-testid="stSidebar"] [data-testid="stIconMaterial"] {{
+            font-family: unset !important;
+        }}
+
+        /* Safety net: guarantee the sidebar collapse/expand control never
+           leaks raw icon-ligature text, while keeping the icon glyph
+           itself fully visible and functional. */
+        [data-testid="collapsedControl"] {{
+            color: transparent !important;
+        }}
+        [data-testid="collapsedControl"] svg,
+        [data-testid="collapsedControl"] [data-testid="stIconMaterial"] {{
+            color: {TEXT_PRIMARY} !important;
+        }}
+
 
         h1, h2, h3 {{
             color: {TEXT_PRIMARY};
