@@ -446,8 +446,8 @@ def inject_finfy_theme() -> None:
         [data-testid="stDataFrame"] {{
             border: 1px solid {BORDER_STRONG}; border-radius: 10px; font-family: {MONO_FONT};
         }}
-        div[data-testid="stStatusWidget"] {{ font-family: {MONO_FONT}; }}
         </style>
+
         """,
         unsafe_allow_html=True,
     )
@@ -873,29 +873,25 @@ st.markdown(
 
 if run_clicked or "last_result" in st.session_state:
     if run_clicked:
-        status_box = st.status("Finfy Core: Initializing risk engine...", expanded=True)
-
-        def _on_status(msg: str) -> None:
-            status_box.write(msg)
-
-        result = run_var_analysis(
-            tickers=tickers,
-            weights=raw_weights,
-            portfolio_value=portfolio_value,
-            confidence_level=confidence_level,
-            horizon_days=horizon_days,
-            period=period,
-            status_callback=_on_status,
-        )
-
-        if result["success"]:
-            status_box.update(label="Finfy Core: Analysis complete.", state="complete", expanded=False)
-        else:
-            status_box.update(label="Finfy Core: Analysis failed.", state="error", expanded=True)
+        # Clean, non-collapsible spinner -- runs the full analysis quietly
+        # in the background and auto-clears itself the instant it's done.
+        # (The previous st.status() multi-step widget was removed: its
+        # nested st.write() milestone lines were rendering on top of the
+        # widget's own icon/label, producing an overlapping text bug.)
+        with st.spinner("Finfy Analytics Engine: Synchronizing portfolio risk matrix..."):
+            result = run_var_analysis(
+                tickers=tickers,
+                weights=raw_weights,
+                portfolio_value=portfolio_value,
+                confidence_level=confidence_level,
+                horizon_days=horizon_days,
+                period=period,
+            )
 
         st.session_state["last_result"] = result
     else:
         result = st.session_state["last_result"]
+
 
     if not result["success"]:
         st.error(result["error"])
