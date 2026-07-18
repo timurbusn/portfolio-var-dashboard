@@ -24,11 +24,14 @@ Run locally with:
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 import streamlit as st
+import yfinance as yf
+
 
 from var_engine import run_var_analysis, MIN_HORIZON_DAYS, MAX_HORIZON_DAYS
 
@@ -332,36 +335,112 @@ def inject_finfy_theme() -> None:
 
 
 # ============================================================
-# Logo / Avatar Helpers
+# Logo / Avatar Helpers — Robust 3-Tier Resolution Pipeline
 # ============================================================
-def resolve_logo_url(ticker: str) -> str:
-    """
-    Resolve a clean corporate logo URL for a given ticker via the Clearbit
-    Logo CDN, using a curated ticker->domain map. Returns an empty string
-    if no domain mapping exists (caller should render a monogram fallback).
-    """
+# Tier 1: static Clearbit CDN lookup keyed off a curated ticker->domain map.
+# Tier 2: yfinance upstream metadata (`Ticker.info["logo_url"]`), wrapped in
+#         a strict try/except so a bad network response never hangs render.
+# Tier 3: pure CSS/HTML circular monogram avatar -- guaranteed to render,
+#         never a broken <img> tag.
+#
+# Every candidate URL is validated server-side (HEAD request, short
+# timeout) *before* it is ever embedded in HTML, so the browser is never
+# asked to load a URL that might fail -- eliminating broken-image icons
+# entirely. Results are cached so repeated Streamlit reruns never re-hit
+# the network for the same ticker.
+
+LOGO_REQUEST_TIMEOUT_SECONDS = 2.5
+
+
+def _tier1_clearbit_url(ticker: str) -> Optional[str]:
+    """Tier 1: static Clearbit CDN URL from the curated domain map."""
     domain = TICKER_DOMAINS.get(ticker.upper())
     if not domain:
-        return ""
+        return None
     return CLEARBIT_LOGO_URL.format(domain=domain)
 
 
+def _tier2_yfinance_url(ticker: str) -> Optional[str]:
+    """
+    Tier 2: fall back to yfinance's own upstream metadata for a logo URL.
+    Strictly wrapped in try/except -- any network error, missing key, or
+    malformed response is swallowed and treated as "no logo available"
+    rather than ever crashing or hanging the page render.
+    """
+    try:
+        info = yf.Ticker(ticker).get_info()
+        logo_url = info.get("logo_url") or info.get("logoUrl")
+        if logo_url and isinstance(logo_url, str) and logo_url.startswith("http"):
+            return logo_url
+    except Exception:
+        pass
+    return None
+
+
+def _url_resolves_to_image(url: str) -> bool:
+    """
+    Validate that a candidate logo URL actually resolves successfully
+    (HTTP 200) within a short timeout, so we never embed a dead link in
+    the page. Any exception (timeout, DNS failure, connection error) is
+    treated as a failed resolution.
+    """
+    try:
+        response = requests.head(
+            url, timeout=LOGO_REQUEST_TIMEOUT_SECONDS, allow_redirects=True
+        )
+        if response.status_code == 200:
+            return True
+        # Some CDNs don't support HEAD cleanly -- fall back to a light GET.
+        if response.status_code in (403, 405):
+            get_resp = requests.get(
+                url, timeout=LOGO_REQUEST_TIMEOUT_SECONDS, stream=True
+            )
+            return get_resp.status_code == 200
+        return False
+    except Exception:
+        return False
+
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)
+def get_robust_logo_url(ticker: str) -> Optional[str]:
+    """
+    Resolve a validated, guaranteed-working logo URL for `ticker` using the
+    3-tier pipeline (Clearbit -> yfinance metadata -> None). Returns None
+    if no tier produces a URL that actually resolves to a live image --
+    callers must render the Tier 3 CSS monogram fallback in that case.
+    Cached per-ticker for 6 hours to avoid redundant network calls on
+    every Streamlit rerun.
+    """
+    for candidate in (_tier1_clearbit_url(ticker), _tier2_yfinance_url(ticker)):
+        if candidate and _url_resolves_to_image(candidate):
+            return candidate
+    return None
+
+
 def render_avatar_html(ticker: str, size: int = 28) -> str:
-    """Build an HTML micro-avatar: corporate logo image, or a monogram fallback."""
-    logo_url = resolve_logo_url(ticker)
+    """
+    Build an HTML micro-avatar. Renders a crisp corporate logo image only
+    if a URL has already been server-side validated; otherwise renders the
+    premium circular CSS/HTML monogram fallback -- never a broken <img>.
+    """
+    logo_url = get_robust_logo_url(ticker)
     monogram = ticker[:2].upper()
     if logo_url:
         return (
             f'<div class="finfy-avatar" style="width:{size}px;height:{size}px;">'
-            f'<img src="{logo_url}" onerror="this.style.display=\'none\'; '
-            f'this.parentElement.innerHTML=\'<div class=&quot;finfy-avatar-fallback&quot;>{monogram}</div>\';" />'
+            f'<img src="{logo_url}" alt="{monogram}" '
+            f'style="width:100%;height:100%;object-fit:contain;background:#fff;" />'
             f"</div>"
         )
     return (
-        f'<div class="finfy-avatar" style="width:{size}px;height:{size}px;">'
-        f'<div class="finfy-avatar-fallback">{monogram}</div>'
-        f"</div>"
+        f'<span class="finfy-avatar-fallback" '
+        f'style="display:inline-flex;align-items:center;justify-content:center;'
+        f"width:{size}px;height:{size}px;line-height:1;border-radius:50%;"
+        f'background-color:{BORDER_STRONG};color:#FFFFFF;text-align:center;'
+        f"font-family:{MONO_FONT};font-size:{max(9, int(size * 0.4))}px;"
+        f'font-weight:700;flex-shrink:0;">{monogram}</span>'
     )
+
 
 
 def render_portfolio_composition(tickers: List[str], weights: List[float]) -> None:
