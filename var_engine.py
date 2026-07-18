@@ -2,12 +2,13 @@
 var_engine.py
 =============
 
-Backend service module for the Portfolio Value at Risk (VaR) Streamlit
-dashboard. Encapsulates all data fetching, validation, and statistical
-computation logic so the frontend (`app.py`) stays purely presentational.
+Finfy Core — the backend risk-analytics engine for the Finfy Portfolio
+Volatility Analytics platform. Encapsulates all data fetching, validation,
+and statistical computation logic so the frontend (`app.py`) stays purely
+presentational and performs zero data manipulation of its own.
 
 Public API:
-    run_var_analysis(...) -> VarResult (a TypedDict-like dict)
+    run_var_analysis(...) -> Dict[str, Any]   (a structured, nested payload)
 
 Design notes:
     - All functions are pure and independently testable.
@@ -21,12 +22,15 @@ Design notes:
       rolling-window returns (not a naive sqrt-time scalar on daily
       returns), while Parametric VaR uses the mathematically standard
       square-root-of-time scaling of the normal distribution's mean/std.
+    - The orchestrator returns a *unified, nested* payload -- market data,
+      portfolio-level series, and risk metrics are each cleanly namespaced
+      so the frontend never needs to reshape or derive data itself.
 """
 
 from __future__ import annotations
 
 import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -38,8 +42,10 @@ from scipy.stats import norm
 warnings.filterwarnings("ignore", message=".*urllib3 v2 only supports OpenSSL.*")
 
 # Hard bounds for the multi-day time horizon slider.
-MIN_HORIZON_DAYS = 1
-MAX_HORIZON_DAYS = 100
+MIN_HORIZON_DAYS: int = 1
+MAX_HORIZON_DAYS: int = 100
+
+StatusCallback = Optional[Callable[[str], None]]
 
 
 # ============================================================
@@ -217,7 +223,7 @@ def _compounded_rolling_window_returns(
 
     # Need at least horizon_days+1 observations to form a single window;
     # require a modest minimum of usable windows for a meaningful empirical
-    # distribution (at least 30, when available).
+    # distribution (at least 5, when available).
     min_required = horizon_days + 1
     if n_obs < min_required or n_obs - horizon_days < 5:
         # Not enough history for genuine rolling windows -> fall back to the
@@ -281,7 +287,8 @@ def parametric_var(
     chosen confidence level, scaled to the desired time horizon via the
     square-root-of-time rule -- the mathematically standard convention for
     scaling a normal-distribution VaR estimate to multi-day horizons under
-    the i.i.d. returns assumption.
+    the i.i.d. returns assumption. This scaling remains numerically stable
+    even at macro-scale horizons (up to 100 days).
     """
     mu = portfolio_returns.mean()          # mean daily portfolio return
     sigma = portfolio_returns.std()        # daily portfolio volatility (std dev)
@@ -358,32 +365,42 @@ def run_var_analysis(
     period: str = "5y",
     num_simulations: int = 10_000,
     seed: int = 42,
-    status_callback: Optional[Any] = None,
+    status_callback: StatusCallback = None,
 ) -> Dict[str, Any]:
     """
-    End-to-end VaR pipeline: validate -> fetch -> compute -> package results.
+    End-to-end Finfy risk pipeline: validate -> fetch -> compute -> package.
 
     Args:
         status_callback: optional callable(str) invoked with human-readable
-            milestone messages as the pipeline progresses (used by the
-            Streamlit frontend to drive a live `st.status()` widget).
+            engineering-phrase milestones as the pipeline progresses (used
+            by the Streamlit frontend to drive a live `st.status()` widget).
 
-    Returns a structured dict:
+    Returns a unified, nested payload so the frontend performs *zero* data
+    manipulation of its own:
         {
             "success": bool,
             "error": Optional[str],
-            "historical": {"var_pct": float, "var_dollar": float},
-            "parametric": {"var_pct": float, "var_dollar": float},
-            "monte_carlo": {"var_pct": float, "var_dollar": float},
-            "portfolio_returns": pd.Series,
-            "asset_returns": pd.DataFrame,
-            "prices": pd.DataFrame,
-            "normalized_prices": pd.DataFrame,
-            "cumulative_returns": pd.Series,
-            "drawdown": pd.Series,
-            "n_observations": int,
-            "tickers": List[str],
-            "weights": List[float],
+            "market_data": {
+                "prices": pd.DataFrame,             # raw close prices
+                "normalized_prices": pd.DataFrame,   # rebased to 100
+                "asset_returns": pd.DataFrame,        # daily pct returns
+            },
+            "portfolio": {
+                "returns": pd.Series,
+                "cumulative_returns": pd.Series,
+                "drawdown": pd.Series,
+                "tickers": List[str],
+                "weights": List[float],
+                "n_observations": int,
+                "horizon_days": int,
+                "portfolio_value": float,
+                "confidence_level": float,
+            },
+            "risk_metrics": {
+                "historical": {"var_pct": float, "var_dollar": float},
+                "parametric": {"var_pct": float, "var_dollar": float},
+                "monte_carlo": {"var_pct": float, "var_dollar": float},
+            },
         }
     """
     result: Dict[str, Any] = {"success": False, "error": None}
@@ -399,30 +416,30 @@ def run_var_analysis(
     tickers = [t.strip().upper() for t in tickers if t and t.strip()]
 
     try:
-        _report("Validating portfolio inputs...")
+        _report("Finfy Core: Validating portfolio configuration...")
         horizon_days = validate_horizon(horizon_days)
         validate_inputs(tickers, weights)
 
-        _report("Fetching raw exchange data via yfinance...")
+        _report("Finfy Core: Accessing institutional equity endpoints via yfinance...")
         prices = download_prices(tickers, period)
 
-        _report("Reindexing historical weights...")
+        _report("Finfy Math: Reindexing historical price series and asset weights...")
         returns = compute_returns(prices)
         weights_arr = np.array(weights, dtype=float)
         portfolio_returns = compute_portfolio_returns(returns, weights_arr)
         normalized_prices = compute_normalized_prices(prices)
 
-        _report("Computing historical simulation VaR...")
-        hist_pct, hist_dollar = historical_var(
-            portfolio_returns, portfolio_value, confidence_level, horizon_days
-        )
-
-        _report("Computing parametric (variance-covariance) VaR...")
+        _report("Finfy Math: Building dynamic variance-covariance matrices...")
         param_pct, param_dollar = parametric_var(
             portfolio_returns, portfolio_value, confidence_level, horizon_days
         )
 
-        _report("Computing covariance matrix variants for Monte Carlo simulation...")
+        _report("Finfy Math: Resampling empirical historical return distributions...")
+        hist_pct, hist_dollar = historical_var(
+            portfolio_returns, portfolio_value, confidence_level, horizon_days
+        )
+
+        _report("Finfy Math: Running Monte Carlo simulation lattice (10,000 paths)...")
         mc_pct, mc_dollar = monte_carlo_var(
             returns,
             weights_arr,
@@ -433,7 +450,7 @@ def run_var_analysis(
             seed,
         )
 
-        _report("Assembling performance and drawdown analytics...")
+        _report("Finfy Visuals: Compiling performance and drawdown analytics...")
         cumulative_returns = compute_cumulative_returns(portfolio_returns)
         drawdown = compute_drawdown(cumulative_returns)
 
@@ -441,22 +458,30 @@ def run_var_analysis(
             {
                 "success": True,
                 "error": None,
-                "historical": {"var_pct": hist_pct, "var_dollar": hist_dollar},
-                "parametric": {"var_pct": param_pct, "var_dollar": param_dollar},
-                "monte_carlo": {"var_pct": mc_pct, "var_dollar": mc_dollar},
-                "portfolio_returns": portfolio_returns,
-                "asset_returns": returns,
-                "prices": prices,
-                "normalized_prices": normalized_prices,
-                "cumulative_returns": cumulative_returns,
-                "drawdown": drawdown,
-                "n_observations": int(len(portfolio_returns)),
-                "tickers": tickers,
-                "weights": weights,
-                "horizon_days": horizon_days,
+                "market_data": {
+                    "prices": prices,
+                    "normalized_prices": normalized_prices,
+                    "asset_returns": returns,
+                },
+                "portfolio": {
+                    "returns": portfolio_returns,
+                    "cumulative_returns": cumulative_returns,
+                    "drawdown": drawdown,
+                    "tickers": tickers,
+                    "weights": weights,
+                    "n_observations": int(len(portfolio_returns)),
+                    "horizon_days": horizon_days,
+                    "portfolio_value": float(portfolio_value),
+                    "confidence_level": float(confidence_level),
+                },
+                "risk_metrics": {
+                    "historical": {"var_pct": hist_pct, "var_dollar": hist_dollar},
+                    "parametric": {"var_pct": param_pct, "var_dollar": param_dollar},
+                    "monte_carlo": {"var_pct": mc_pct, "var_dollar": mc_dollar},
+                },
             }
         )
-        _report("Analysis complete.")
+        _report("Finfy Core: Analysis complete.")
         return result
 
     except (ValidationError, DataFetchError) as exc:

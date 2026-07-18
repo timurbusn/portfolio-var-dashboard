@@ -2,21 +2,22 @@
 app.py
 ======
 
-Streamlit frontend for the Portfolio Value at Risk (VaR) Dashboard —
-a premium, professional-grade quantitative analytics terminal.
+Finfy — Portfolio Volatility Analytics.
+
+A premium, institutional-grade quantitative risk terminal built on
+Streamlit. All statistical computation and data shaping is delegated
+entirely to `var_engine.py` (Finfy Core); this module is purely
+presentational — it renders the unified payload it receives and performs
+zero data manipulation of its own.
 
 Run locally with:
     streamlit run app.py
-
-All heavy-lifting (data download, validation, statistics) is delegated to
-`var_engine.py` — this file is purely responsible for layout & visualization.
 """
 
 from __future__ import annotations
 
 from typing import List
 
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -27,21 +28,30 @@ from var_engine import run_var_analysis, MIN_HORIZON_DAYS, MAX_HORIZON_DAYS
 # Page Configuration
 # ============================================================
 st.set_page_config(
-    page_title="Portfolio VaR Terminal",
-    page_icon="📉",
+    page_title="Finfy // Portfolio Volatility Analytics",
+    page_icon="◆",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # ============================================================
-# Theme Constants
+# Brand & Theme Tokens
 # ============================================================
-SURFACE_BG = "#131C33"
-BORDER_COLOR = "#22345E"
-ACCENT = "#00E676"
-ACCENT_AMBER = "#FFA600"
-ACCENT_RED = "#FF4B4B"
-TEXT_MUTED = "#8FA3C7"
+BG_DEEP = "#0A0E17"
+SURFACE = "rgba(19, 26, 46, 0.55)"          # glass surface (translucent)
+SURFACE_SOLID = "#131A2E"
+BORDER = "rgba(255, 255, 255, 0.08)"
+BORDER_STRONG = "#26314F"
+
+ACCENT_GREEN = "#39FFB0"     # vibrant neon green — positive / brand accent
+ACCENT_RED = "#E8746B"       # soft desaturated red — VaR / risk metrics
+ACCENT_AMBER = "#E8B76B"
+ACCENT_BLUE = "#6E8CFF"
+TEXT_PRIMARY = "#EDF1FB"
+TEXT_MUTED = "#7C88A6"
+
+MONO_FONT = "'JetBrains Mono', 'SFMono-Regular', 'Roboto Mono', Consolas, monospace"
+SANS_FONT = "'Inter', 'Helvetica Neue', sans-serif"
 
 CONFIDENCE_OPTIONS = ["90%", "95%", "99%"]
 CONFIDENCE_MAP = {"90%": 0.90, "95%": 0.95, "99%": 0.99}
@@ -55,127 +65,204 @@ PERIOD_OPTIONS = {
 
 
 # ============================================================
-# Premium Custom CSS Injection
+# Custom CSS — Glassmorphism / Typography Matrix
 # ============================================================
-def inject_custom_css() -> None:
+def inject_finfy_theme() -> None:
+    """
+    Inject scoped CSS for the Finfy brand: glass-panel cards, monospace
+    numerals/tickers, layered shadows. Selectors are scoped to custom
+    Finfy-prefixed classes (plus a small number of well-known Streamlit
+    test-ids) so native Streamlit layout/rendering is never broken.
+    """
     st.markdown(
         f"""
         <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap');
+
         .stApp {{
-            background-color: #0B1120;
+            background: radial-gradient(circle at 15% 0%, #101833 0%, {BG_DEEP} 55%);
         }}
 
-        /* Sidebar */
+        html, body, [class*="css"] {{
+            font-family: {SANS_FONT};
+        }}
+
         section[data-testid="stSidebar"] {{
-            background-color: {SURFACE_BG};
-            border-right: 1px solid {BORDER_COLOR};
+            background-color: {SURFACE_SOLID};
+            border-right: 1px solid {BORDER_STRONG};
+        }}
+        section[data-testid="stSidebar"] * {{
+            font-family: {SANS_FONT};
         }}
 
-        /* Headline typography */
         h1, h2, h3 {{
-            font-family: 'Helvetica Neue', sans-serif;
-            letter-spacing: 0.3px;
+            color: {TEXT_PRIMARY};
+            letter-spacing: 0.2px;
         }}
 
-        .terminal-header {{
+        /* ---------------- Finfy Header ---------------- */
+        .finfy-header {{
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 18px 24px;
-            background: linear-gradient(135deg, {SURFACE_BG} 0%, #0F1830 100%);
-            border: 1px solid {BORDER_COLOR};
-            border-radius: 10px;
-            margin-bottom: 20px;
+            padding: 22px 28px;
+            background: linear-gradient(135deg, rgba(19,26,46,0.85) 0%, rgba(14,19,36,0.85) 100%);
+            border: 1px solid {BORDER_STRONG};
+            border-radius: 14px;
+            margin-bottom: 22px;
+            box-shadow: 0 12px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.03);
+            backdrop-filter: blur(8px);
         }}
-        .terminal-header h1 {{
-            font-size: 1.6rem;
+        .finfy-wordmark {{
+            font-family: {MONO_FONT};
+            font-size: 1.9rem;
+            font-weight: 700;
+            color: {TEXT_PRIMARY};
             margin: 0;
-            color: #EAF1FF;
+            letter-spacing: -0.5px;
         }}
-        .terminal-header .accent {{
-            color: {ACCENT};
+        .finfy-wordmark span {{
+            color: {ACCENT_GREEN};
         }}
-        .terminal-header p {{
-            margin: 2px 0 0 0;
+        .finfy-subline {{
+            font-family: {MONO_FONT};
+            font-size: 0.78rem;
             color: {TEXT_MUTED};
-            font-size: 0.85rem;
+            margin-top: 4px;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
         }}
-        .live-pill {{
+        .finfy-pill {{
             display: inline-flex;
             align-items: center;
-            gap: 6px;
-            padding: 4px 12px;
-            border: 1px solid {ACCENT};
+            gap: 8px;
+            padding: 6px 14px;
+            border: 1px solid {ACCENT_GREEN};
             border-radius: 999px;
-            color: {ACCENT};
-            font-size: 0.75rem;
-            font-weight: 600;
-            letter-spacing: 0.5px;
+            color: {ACCENT_GREEN};
+            font-family: {MONO_FONT};
+            font-size: 0.72rem;
+            font-weight: 500;
+            letter-spacing: 0.6px;
+            background: rgba(57, 255, 176, 0.06);
         }}
-        .live-dot {{
+        .finfy-dot {{
             width: 7px;
             height: 7px;
             border-radius: 50%;
-            background: {ACCENT};
-            box-shadow: 0 0 6px {ACCENT};
+            background: {ACCENT_GREEN};
+            box-shadow: 0 0 8px {ACCENT_GREEN};
+            animation: finfy-pulse 2.2s ease-in-out infinite;
+        }}
+        @keyframes finfy-pulse {{
+            0%, 100% {{ opacity: 1; }}
+            50% {{ opacity: 0.35; }}
         }}
 
-        /* Metric / KPI cards */
-        .kpi-card {{
-            background-color: {SURFACE_BG};
-            border: 1px solid {BORDER_COLOR};
-            border-radius: 10px;
-            padding: 16px 18px;
+        /* ---------------- Glass Metric Cards ---------------- */
+        .finfy-card {{
+            background: {SURFACE};
+            border: 1px solid {BORDER};
+            border-radius: 14px;
+            padding: 18px 20px;
             height: 100%;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.04);
+            backdrop-filter: blur(10px);
+            position: relative;
+            overflow: hidden;
         }}
-        .kpi-label {{
-            font-size: 0.75rem;
+        .finfy-card::before {{
+            content: "";
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 2px;
+            background: var(--accent-color, {ACCENT_GREEN});
+            opacity: 0.85;
+        }}
+        .finfy-card-label {{
+            font-family: {MONO_FONT};
+            font-size: 0.68rem;
             color: {TEXT_MUTED};
             text-transform: uppercase;
-            letter-spacing: 0.6px;
+            letter-spacing: 0.8px;
+            margin-bottom: 10px;
+        }}
+        .finfy-card-value {{
+            font-family: {MONO_FONT};
+            font-size: 1.55rem;
+            font-weight: 700;
+            color: {TEXT_PRIMARY};
+            margin-bottom: 4px;
+            line-height: 1.15;
+        }}
+        .finfy-card-delta {{
+            font-family: {MONO_FONT};
+            font-size: 0.82rem;
+            font-weight: 500;
+        }}
+        .finfy-card-delta.risk {{ color: {ACCENT_RED}; }}
+        .finfy-card-delta.positive {{ color: {ACCENT_GREEN}; }}
+        .finfy-card-delta.neutral {{ color: {TEXT_MUTED}; }}
+
+        /* ---------------- Section / Panel Headers ---------------- */
+        .finfy-panel-head {{
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
             margin-bottom: 6px;
         }}
-        .kpi-value {{
-            font-size: 1.5rem;
+        .finfy-panel-title {{
+            font-family: {SANS_FONT};
+            font-size: 1.0rem;
             font-weight: 700;
-            color: #EAF1FF;
-            margin-bottom: 2px;
+            color: {TEXT_PRIMARY};
         }}
-        .kpi-delta {{
-            font-size: 0.85rem;
-            font-weight: 600;
-        }}
-        .kpi-delta.neg {{ color: {ACCENT_RED}; }}
-        .kpi-delta.neutral {{ color: {TEXT_MUTED}; }}
-        .kpi-accent-bar {{
-            height: 3px;
-            width: 36px;
-            border-radius: 2px;
-            margin-bottom: 10px;
-        }}
-
-        /* Section panels around charts */
-        .panel-title {{
-            font-size: 0.95rem;
-            font-weight: 700;
-            color: #EAF1FF;
-            margin-bottom: 2px;
-        }}
-        .panel-subtitle {{
-            font-size: 0.78rem;
+        .finfy-panel-tag {{
+            font-family: {MONO_FONT};
+            font-size: 0.68rem;
             color: {TEXT_MUTED};
-            margin-bottom: 10px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }}
+        .finfy-panel-sub {{
+            font-family: {SANS_FONT};
+            font-size: 0.8rem;
+            color: {TEXT_MUTED};
+            margin-bottom: 12px;
+        }}
+        .finfy-panel-wrap {{
+            background: {SURFACE};
+            border: 1px solid {BORDER};
+            border-radius: 14px;
+            padding: 18px 18px 6px 18px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.04);
+            backdrop-filter: blur(10px);
+            margin-bottom: 8px;
         }}
 
-        /* Divider */
-        hr {{
-            border-color: {BORDER_COLOR} !important;
+        /* ---------------- Ticker chips (monospace) ---------------- */
+        .finfy-chip {{
+            display: inline-block;
+            font-family: {MONO_FONT};
+            font-size: 0.75rem;
+            padding: 3px 9px;
+            border-radius: 6px;
+            border: 1px solid {BORDER_STRONG};
+            color: {TEXT_PRIMARY};
+            background: rgba(255,255,255,0.03);
+            margin: 2px 4px 2px 0;
         }}
 
-        /* Dataframe / table styling */
+        hr {{ border-color: {BORDER_STRONG} !important; }}
+
         [data-testid="stDataFrame"] {{
-            border: 1px solid {BORDER_COLOR};
-            border-radius: 8px;
+            border: 1px solid {BORDER_STRONG};
+            border-radius: 10px;
+            font-family: {MONO_FONT};
+        }}
+
+        div[data-testid="stStatusWidget"] {{
+            font-family: {MONO_FONT};
         }}
         </style>
         """,
@@ -184,11 +271,11 @@ def inject_custom_css() -> None:
 
 
 # ============================================================
-# Helper Functions
+# Input Helpers
 # ============================================================
 def parse_tickers(raw: str) -> List[str]:
     """Turn a comma-separated ticker string into a clean, de-duplicated list."""
-    seen = []
+    seen: List[str] = []
     for t in raw.split(","):
         t_clean = t.strip().upper()
         if t_clean and t_clean not in seen:
@@ -213,7 +300,6 @@ def parse_weights(raw: str, n_tickers: int) -> List[float]:
 
     values = [float(p) for p in parts]
 
-    # If it looks like percentages (sums closer to 100 than to 1), convert.
     total = sum(values)
     if total > 1.5:  # heuristic: user typed e.g. 25, 25, 25, 25
         values = [v / 100.0 for v in values]
@@ -221,96 +307,31 @@ def parse_weights(raw: str, n_tickers: int) -> List[float]:
     return values
 
 
-def kpi_card(label: str, value: str, delta: str, delta_class: str = "neg", accent_color: str = ACCENT) -> str:
-    """Build a styled HTML KPI card block."""
-    return f"""
-    <div class="kpi-card">
-        <div class="kpi-accent-bar" style="background-color:{accent_color};"></div>
-        <div class="kpi-label">{label}</div>
-        <div class="kpi-value">{value}</div>
-        <div class="kpi-delta {delta_class}">{delta}</div>
-    </div>
-    """
-
-
-def build_distribution_chart(
-    portfolio_returns: pd.Series,
-    var_pct_hist: float,
-    var_pct_param: float,
-    var_pct_mc: float,
-    confidence_label: str,
-    horizon_days: int,
-) -> go.Figure:
-    """Elegant Plotly histogram of historical portfolio returns with a
-    prominent styled VaR cutoff line marking the multi-day loss threshold."""
-    fig = go.Figure()
-
-    fig.add_trace(
-        go.Histogram(
-            x=portfolio_returns * 100,
-            nbinsx=60,
-            marker=dict(color="#4C78F5", line=dict(width=0.5, color="#0B1120")),
-            opacity=0.85,
-            name="Daily Portfolio Returns",
-        )
+def render_kpi_card(label: str, value: str, delta: str, tone: str, accent_color: str) -> None:
+    """Render a single glass-morphic KPI card with monospace numerals."""
+    st.markdown(
+        f"""
+        <div class="finfy-card" style="--accent-color:{accent_color};">
+            <div class="finfy-card-label">{label}</div>
+            <div class="finfy-card-value">{value}</div>
+            <div class="finfy-card-delta {tone}">{delta}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    # Primary, prominent cutoff: Historical VaR — the neon accent line.
-    fig.add_vline(
-        x=-var_pct_hist * 100,
-        line_width=3,
-        line_dash="dash",
-        line_color=ACCENT,
-        annotation_text=f"Historical VaR ({confidence_label}, {horizon_days}d): -{var_pct_hist:.2%}",
-        annotation_position="top left",
-        annotation_font=dict(color=ACCENT, size=12),
-    )
 
-    fig.add_vline(
-        x=-var_pct_param * 100,
-        line_width=2,
-        line_dash="dot",
-        line_color=ACCENT_AMBER,
-        annotation_text=f"Parametric: -{var_pct_param:.2%}",
-        annotation_position="top right",
-        annotation_font=dict(color=ACCENT_AMBER, size=11),
-    )
-
-    fig.add_vline(
-        x=-var_pct_mc * 100,
-        line_width=2,
-        line_dash="dot",
-        line_color=ACCENT_RED,
-        annotation_text=f"Monte Carlo: -{var_pct_mc:.2%}",
-        annotation_position="bottom right",
-        annotation_font=dict(color=ACCENT_RED, size=11),
-    )
-
-    fig.update_layout(
-        title=None,
-        xaxis_title="Return over horizon (%)",
-        yaxis_title="Frequency",
-        bargap=0.02,
-        template="plotly_dark",
-        height=430,
-        margin=dict(t=30, b=40, l=40, r=20),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        showlegend=False,
-    )
-    return fig
-
-
+# ============================================================
+# Chart Builders
+# ============================================================
 def build_asset_performance_chart(normalized_prices: pd.DataFrame) -> go.Figure:
     """
-    High-fidelity multi-line Plotly chart tracking every individual asset's
-    normalized price path (rebased to 100) over the lookback period, so
-    relative performance can be visually compared regardless of each
-    stock's absolute price level.
+    Dominant-canvas multi-line chart tracking every individual asset's
+    normalized price path (rebased to 100) over the lookback period.
     """
     palette = [
-        ACCENT, "#4C78F5", ACCENT_AMBER, ACCENT_RED,
-        "#B388FF", "#00B8D9", "#FF7597", "#C6FF00",
+        ACCENT_GREEN, ACCENT_BLUE, ACCENT_AMBER, ACCENT_RED,
+        "#B388FF", "#4DD0E1", "#FF8FB3", "#C6FF6B",
     ]
     fig = go.Figure()
     for i, ticker in enumerate(normalized_prices.columns):
@@ -320,27 +341,105 @@ def build_asset_performance_chart(normalized_prices: pd.DataFrame) -> go.Figure:
                 y=normalized_prices[ticker].values,
                 mode="lines",
                 name=ticker,
-                line=dict(color=palette[i % len(palette)], width=2),
+                line=dict(color=palette[i % len(palette)], width=2.2),
+                hovertemplate=f"<b>{ticker}</b><br>%{{x|%Y-%m-%d}}<br>Index: %{{y:.2f}}<extra></extra>",
             )
         )
 
     fig.add_hline(y=100, line_width=1, line_dash="dot", line_color=TEXT_MUTED)
 
     fig.update_layout(
-        xaxis_title="Date",
-        yaxis_title="Normalized Value (Base = 100)",
         template="plotly_dark",
-        height=430,
-        margin=dict(t=30, b=40, l=40, r=20),
+        height=460,
+        margin=dict(t=10, b=40, l=44, r=20),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=MONO_FONT, color=TEXT_PRIMARY, size=11),
+        xaxis=dict(title="", gridcolor="rgba(255,255,255,0.05)"),
+        yaxis=dict(title="Normalized Index (Base = 100)", gridcolor="rgba(255,255,255,0.05)"),
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=1.02,
+            y=1.01,
             xanchor="left",
             x=0,
+            font=dict(size=10),
         ),
+        hovermode="x unified",
+    )
+    return fig
+
+
+def build_risk_tail_chart(
+    portfolio_returns: pd.Series,
+    var_pct: float,
+    confidence_label: str,
+    horizon_days: int,
+) -> go.Figure:
+    """
+    Risk Tail Distribution Canvas: the empirical returns distribution curve
+    with clean transparency fill and a single prominent vertical line
+    marking the downside risk boundary (Historical VaR cutoff).
+    """
+    returns_pct = portfolio_returns * 100
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Histogram(
+            x=returns_pct,
+            nbinsx=55,
+            marker=dict(color=ACCENT_BLUE, line=dict(width=0)),
+            opacity=0.35,
+            name="Return Distribution",
+            histnorm="probability density",
+        )
+    )
+
+    # KDE-like smoothed curve via a simple density estimate for a clean
+    # tail silhouette on top of the histogram.
+    try:
+        from scipy.stats import gaussian_kde
+        import numpy as np
+
+        kde = gaussian_kde(returns_pct.dropna())
+        x_grid = np.linspace(returns_pct.min(), returns_pct.max(), 300)
+        y_grid = kde(x_grid)
+        fig.add_trace(
+            go.Scatter(
+                x=x_grid,
+                y=y_grid,
+                mode="lines",
+                line=dict(color=ACCENT_BLUE, width=2),
+                fill="tozeroy",
+                fillcolor="rgba(110, 140, 255, 0.12)",
+                name="Density",
+            )
+        )
+    except Exception:
+        pass
+
+    # Single, prominent downside risk boundary line.
+    fig.add_vline(
+        x=-var_pct * 100,
+        line_width=3,
+        line_dash="dash",
+        line_color=ACCENT_RED,
+        annotation_text=f"VaR Boundary ({confidence_label}, {horizon_days}d): -{var_pct:.2%}",
+        annotation_position="top left",
+        annotation_font=dict(color=ACCENT_RED, size=11, family=MONO_FONT),
+    )
+
+    fig.update_layout(
+        template="plotly_dark",
+        height=460,
+        margin=dict(t=10, b=40, l=44, r=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=MONO_FONT, color=TEXT_PRIMARY, size=11),
+        xaxis=dict(title="Return over Horizon (%)", gridcolor="rgba(255,255,255,0.05)"),
+        yaxis=dict(title="Density", gridcolor="rgba(255,255,255,0.05)"),
+        showlegend=False,
+        bargap=0.02,
     )
     return fig
 
@@ -353,21 +452,21 @@ def build_cumulative_chart(cumulative_returns: pd.Series) -> go.Figure:
             x=cumulative_returns.index,
             y=cumulative_returns.values,
             mode="lines",
-            line=dict(color=ACCENT, width=2),
+            line=dict(color=ACCENT_GREEN, width=2),
             fill="tozeroy",
-            fillcolor="rgba(0,230,118,0.08)",
+            fillcolor="rgba(57,255,176,0.08)",
             name="Cumulative Growth ($1 invested)",
         )
     )
     fig.update_layout(
-        title="Cumulative Portfolio Performance",
-        xaxis_title="Date",
-        yaxis_title="Growth of $1",
         template="plotly_dark",
         height=420,
-        margin=dict(t=60, b=40, l=40, r=40),
+        margin=dict(t=20, b=40, l=44, r=20),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=MONO_FONT, color=TEXT_PRIMARY, size=11),
+        xaxis_title="Date",
+        yaxis_title="Growth of $1",
     )
     return fig
 
@@ -382,19 +481,19 @@ def build_drawdown_chart(drawdown: pd.Series) -> go.Figure:
             mode="lines",
             line=dict(color=ACCENT_RED, width=2),
             fill="tozeroy",
-            fillcolor="rgba(239,85,59,0.15)",
+            fillcolor="rgba(232,116,107,0.15)",
             name="Drawdown (%)",
         )
     )
     fig.update_layout(
-        title="Historical Drawdown",
-        xaxis_title="Date",
-        yaxis_title="Drawdown (%)",
         template="plotly_dark",
         height=420,
-        margin=dict(t=60, b=40, l=40, r=40),
+        margin=dict(t=20, b=40, l=44, r=20),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=MONO_FONT, color=TEXT_PRIMARY, size=11),
+        xaxis_title="Date",
+        yaxis_title="Drawdown (%)",
     )
     return fig
 
@@ -402,13 +501,22 @@ def build_drawdown_chart(drawdown: pd.Series) -> go.Figure:
 # ============================================================
 # Apply Theme
 # ============================================================
-inject_custom_css()
+inject_finfy_theme()
 
 # ============================================================
 # Sidebar — User Inputs
 # ============================================================
 with st.sidebar:
-    st.markdown("### ⚙️ Portfolio Inputs")
+    st.markdown(
+        f"<div style='font-family:{MONO_FONT}; font-weight:700; font-size:1.05rem; "
+        f"color:{TEXT_PRIMARY}; margin-bottom:2px;'>FINFY<span style='color:{ACCENT_GREEN};'>.</span></div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"<div style='font-family:{MONO_FONT}; font-size:0.7rem; color:{TEXT_MUTED}; "
+        f"text-transform:uppercase; letter-spacing:0.5px; margin-bottom:16px;'>Portfolio Configuration</div>",
+        unsafe_allow_html=True,
+    )
 
     tickers_raw = st.text_input(
         "Stock Tickers (comma-separated)",
@@ -456,37 +564,34 @@ with st.sidebar:
     period = PERIOD_OPTIONS[period_label]
 
     st.divider()
-    run_clicked = st.button("🚀 Run VaR Analysis", use_container_width=True, type="primary")
+    run_clicked = st.button("Run Analysis", use_container_width=True, type="primary")
 
 
 # ============================================================
-# Main Header
+# Finfy Header
 # ============================================================
 st.markdown(
     f"""
-    <div class="terminal-header">
+    <div class="finfy-header">
         <div>
-            <h1>📉 Portfolio <span class="accent">VaR</span> Terminal</h1>
-            <p>Historical · Parametric · Monte Carlo risk analytics, powered by live market data</p>
+            <div class="finfy-wordmark">Finfy<span>.</span> Engine</div>
+            <div class="finfy-subline">Portfolio Volatility Analytics // Historical · Parametric · Monte Carlo</div>
         </div>
-        <div class="live-pill"><span class="live-dot"></span> LIVE MARKET DATA</div>
+        <div class="finfy-pill"><span class="finfy-dot"></span> LIVE MARKET FEED</div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
 if run_clicked or "last_result" in st.session_state:
-    # Parse weights fresh each run so edits are always respected.
     try:
         weights = parse_weights(weights_raw, len(tickers))
     except ValueError:
-        st.error(
-            "⚠️ Could not parse weights. Please enter numeric values separated by commas."
-        )
+        st.error("Could not parse weights. Please enter numeric values separated by commas.")
         st.stop()
 
     if run_clicked:
-        status_box = st.status("Initializing risk engine...", expanded=True)
+        status_box = st.status("Finfy Core: Initializing risk engine...", expanded=True)
 
         def _on_status(msg: str) -> None:
             status_box.write(msg)
@@ -502,151 +607,154 @@ if run_clicked or "last_result" in st.session_state:
         )
 
         if result["success"]:
-            status_box.update(label="Analysis complete.", state="complete", expanded=False)
+            status_box.update(label="Finfy Core: Analysis complete.", state="complete", expanded=False)
         else:
-            status_box.update(label="Analysis failed.", state="error", expanded=True)
+            status_box.update(label="Finfy Core: Analysis failed.", state="error", expanded=True)
 
         st.session_state["last_result"] = result
     else:
         result = st.session_state["last_result"]
 
     if not result["success"]:
-        st.error(f"⚠️ {result['error']}")
+        st.error(result["error"])
         st.stop()
 
-    # ---------------- KPI Cards ----------------
-    hist = result["historical"]
-    param = result["parametric"]
-    mc = result["monte_carlo"]
-    effective_horizon = result.get("horizon_days", horizon_days)
+    # Unpack the unified, nested payload — zero data manipulation here.
+    market_data = result["market_data"]
+    portfolio = result["portfolio"]
+    risk_metrics = result["risk_metrics"]
 
+    hist = risk_metrics["historical"]
+    param = risk_metrics["parametric"]
+    mc = risk_metrics["monte_carlo"]
+
+    eff_horizon = portfolio["horizon_days"]
+    eff_confidence_label = confidence_label
+
+    # ---------------- Glass KPI Grid ----------------
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        st.markdown(
-            kpi_card(
-                f"Historical VaR ({confidence_label}, {effective_horizon}d)",
-                f"${hist['var_dollar']:,.2f}",
-                f"-{hist['var_pct']:.2%}",
-                "neg",
-                ACCENT,
-            ),
-            unsafe_allow_html=True,
+        render_kpi_card(
+            f"Historical VaR · {eff_confidence_label} · {eff_horizon}D",
+            f"${hist['var_dollar']:,.2f}",
+            f"-{hist['var_pct']:.2%}",
+            "risk",
+            ACCENT_RED,
         )
     with col2:
-        st.markdown(
-            kpi_card(
-                f"Parametric VaR ({confidence_label}, {effective_horizon}d)",
-                f"${param['var_dollar']:,.2f}",
-                f"-{param['var_pct']:.2%}",
-                "neg",
-                ACCENT_AMBER,
-            ),
-            unsafe_allow_html=True,
+        render_kpi_card(
+            f"Parametric VaR · {eff_confidence_label} · {eff_horizon}D",
+            f"${param['var_dollar']:,.2f}",
+            f"-{param['var_pct']:.2%}",
+            "risk",
+            ACCENT_AMBER,
         )
     with col3:
-        st.markdown(
-            kpi_card(
-                f"Monte Carlo VaR ({confidence_label}, {effective_horizon}d)",
-                f"${mc['var_dollar']:,.2f}",
-                f"-{mc['var_pct']:.2%}",
-                "neg",
-                ACCENT_RED,
-            ),
-            unsafe_allow_html=True,
+        render_kpi_card(
+            f"Monte Carlo VaR · {eff_confidence_label} · {eff_horizon}D",
+            f"${mc['var_dollar']:,.2f}",
+            f"-{mc['var_pct']:.2%}",
+            "risk",
+            ACCENT_BLUE,
         )
     with col4:
-        st.markdown(
-            kpi_card(
-                "Portfolio Value",
-                f"${portfolio_value:,.2f}",
-                "Base capital",
-                "neutral",
-                "#4C78F5",
-            ),
-            unsafe_allow_html=True,
+        render_kpi_card(
+            "Portfolio Value",
+            f"${portfolio['portfolio_value']:,.2f}",
+            "Base Capital",
+            "positive",
+            ACCENT_GREEN,
         )
     with col5:
-        st.markdown(
-            kpi_card(
-                "Observations Used",
-                f"{result['n_observations']:,}",
-                f"Lookback: {period_label}",
-                "neutral",
-                "#B388FF",
-            ),
-            unsafe_allow_html=True,
+        render_kpi_card(
+            "Observations",
+            f"{portfolio['n_observations']:,}",
+            f"Lookback: {period_label}",
+            "neutral",
+            TEXT_MUTED,
         )
 
     st.write("")
-    st.divider()
 
-    # ---------------- Side-by-Side Grid: Distribution | Asset Performance ----------------
-    left_col, right_col = st.columns(2)
+    # ---------------- Asymmetric Grid: Performance (dominant) | Risk Tail ----------------
+    left_col, right_col = st.columns([3, 2])
 
     with left_col:
-        st.markdown('<div class="panel-title">📊 Volatility Distribution</div>', unsafe_allow_html=True)
+        st.markdown('<div class="finfy-panel-wrap">', unsafe_allow_html=True)
         st.markdown(
-            '<div class="panel-subtitle">Portfolio return distribution with VaR cutoff thresholds</div>',
+            """
+            <div class="finfy-panel-head">
+                <div class="finfy-panel-title">Asset Performance Tracking</div>
+                <div class="finfy-panel-tag">Normalized · Base 100</div>
+            </div>
+            <div class="finfy-panel-sub">Individual holding trajectories over the selected lookback window</div>
+            """,
             unsafe_allow_html=True,
         )
         st.plotly_chart(
-            build_distribution_chart(
-                result["portfolio_returns"],
-                hist["var_pct"],
-                param["var_pct"],
-                mc["var_pct"],
-                confidence_label,
-                effective_horizon,
+            build_asset_performance_chart(market_data["normalized_prices"]),
+            use_container_width=True,
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with right_col:
+        st.markdown('<div class="finfy-panel-wrap">', unsafe_allow_html=True)
+        st.markdown(
+            """
+            <div class="finfy-panel-head">
+                <div class="finfy-panel-title">Risk Tail Distribution</div>
+                <div class="finfy-panel-tag">Empirical · VaR Cutoff</div>
+            </div>
+            <div class="finfy-panel-sub">Portfolio return density with downside risk boundary</div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(
+            build_risk_tail_chart(
+                portfolio["returns"], hist["var_pct"], eff_confidence_label, eff_horizon
             ),
             use_container_width=True,
         )
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    with right_col:
-        st.markdown('<div class="panel-title">📈 Asset Performance Tracking</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="panel-subtitle">Normalized price paths (base = 100) across all holdings</div>',
-            unsafe_allow_html=True,
-        )
-        st.plotly_chart(
-            build_asset_performance_chart(result["normalized_prices"]),
-            use_container_width=True,
-        )
-
-    st.divider()
+    st.write("")
 
     # ---------------- Tabs: Performance / Drawdown / Details ----------------
     tab1, tab2, tab3 = st.tabs(
-        ["📈 Portfolio Performance", "📉 Drawdown", "📋 Portfolio Details"]
+        ["Portfolio Performance", "Drawdown", "Portfolio Details"]
     )
 
     with tab1:
         st.plotly_chart(
-            build_cumulative_chart(result["cumulative_returns"]),
+            build_cumulative_chart(portfolio["cumulative_returns"]),
             use_container_width=True,
         )
 
     with tab2:
         st.plotly_chart(
-            build_drawdown_chart(result["drawdown"]), use_container_width=True
+            build_drawdown_chart(portfolio["drawdown"]), use_container_width=True
         )
 
     with tab3:
         detail_df = pd.DataFrame(
             {
-                "Ticker": result["tickers"],
-                "Weight": [f"{w:.2%}" for w in result["weights"]],
+                "Ticker": portfolio["tickers"],
+                "Weight": [f"{w:.2%}" for w in portfolio["weights"]],
             }
         )
         col_a, col_b = st.columns([1, 2])
         with col_a:
             st.subheader("Holdings")
+            chips = "".join(f'<span class="finfy-chip">{t}</span>' for t in portfolio["tickers"])
+            st.markdown(chips, unsafe_allow_html=True)
+            st.write("")
             st.dataframe(detail_df, use_container_width=True, hide_index=True)
         with col_b:
             st.subheader("Interpretation")
             st.info(
-                f"With **{confidence_label}** confidence, this portfolio is not "
+                f"With **{eff_confidence_label}** confidence, this portfolio is not "
                 f"expected to lose more than **${hist['var_dollar']:,.2f}** "
-                f"({hist['var_pct']:.2%}) over the next **{effective_horizon} day(s)** "
+                f"({hist['var_pct']:.2%}) over the next **{eff_horizon} day(s)** "
                 f"under the Historical Simulation method, "
                 f"**${param['var_dollar']:,.2f}** ({param['var_pct']:.2%}) under "
                 f"the Parametric (Variance-Covariance) method, or "
@@ -655,4 +763,4 @@ if run_clicked or "last_result" in st.session_state:
             )
 
 else:
-    st.info("👈 Configure your portfolio in the sidebar and click **Run VaR Analysis** to begin.")
+    st.info("Configure your portfolio in the sidebar and click **Run Analysis** to begin.")
