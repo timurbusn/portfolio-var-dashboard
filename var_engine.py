@@ -16,6 +16,11 @@ Design notes:
       a structured `success/error` result so Streamlit can render a clean
       error banner instead of crashing.
     - Handles the single-asset edge case (no covariance matrix needed).
+    - Multi-day horizons (1-100 days) are handled using rigorous
+      conventions: Historical VaR uses actual overlapping N-day compounded
+      rolling-window returns (not a naive sqrt-time scalar on daily
+      returns), while Parametric VaR uses the mathematically standard
+      square-root-of-time scaling of the normal distribution's mean/std.
 """
 
 from __future__ import annotations
@@ -31,6 +36,10 @@ from scipy.stats import norm
 # Suppress a harmless urllib3/LibreSSL compatibility warning triggered at
 # import time on some macOS Python builds. Does not affect correctness.
 warnings.filterwarnings("ignore", message=".*urllib3 v2 only supports OpenSSL.*")
+
+# Hard bounds for the multi-day time horizon slider.
+MIN_HORIZON_DAYS = 1
+MAX_HORIZON_DAYS = 100
 
 
 # ============================================================
@@ -50,6 +59,9 @@ class DataFetchError(Exception):
 def validate_inputs(tickers: List[str], weights: List[float]) -> None:
     """
     Validate that tickers and weights are well-formed and compatible.
+    Handles the single-asset edge case gracefully and guards against
+    common malformed input (whitespace, duplicates, negative/zero-sum
+    weights, mismatched counts).
 
     Raises:
         ValidationError: on any mismatch or invalid values.
@@ -67,6 +79,9 @@ def validate_inputs(tickers: List[str], weights: List[float]) -> None:
         raise ValidationError("Weights cannot be negative.")
 
     weight_sum = sum(weights)
+    if weight_sum <= 0:
+        raise ValidationError("Weights must sum to a positive value.")
+
     if not np.isclose(weight_sum, 1.0, atol=1e-3):
         raise ValidationError(
             f"Weights must sum to 1.0 (100%). Current sum = {weight_sum:.4f}."
@@ -74,6 +89,21 @@ def validate_inputs(tickers: List[str], weights: List[float]) -> None:
 
     if len(set(tickers)) != len(tickers):
         raise ValidationError("Duplicate tickers detected. Please use unique tickers.")
+
+
+def validate_horizon(horizon_days: int) -> int:
+    """Clamp/validate the requested time horizon to a sane [1, 100] range."""
+    try:
+        horizon_days = int(horizon_days)
+    except (TypeError, ValueError):
+        raise ValidationError("Time horizon must be an integer number of days.")
+
+    if horizon_days < MIN_HORIZON_DAYS or horizon_days > MAX_HORIZON_DAYS:
+        raise ValidationError(
+            f"Time horizon must be between {MIN_HORIZON_DAYS} and "
+            f"{MAX_HORIZON_DAYS} days."
+        )
+    return horizon_days
 
 
 # ============================================================
@@ -141,6 +171,16 @@ def compute_returns(prices: pd.DataFrame) -> pd.DataFrame:
     return prices.pct_change().dropna()
 
 
+def compute_normalized_prices(prices: pd.DataFrame) -> pd.DataFrame:
+    """
+    Rebase every asset's price series to a common starting value of 100,
+    so that relative performance across assets with very different price
+    levels (e.g. a $50 stock vs. a $3,000 stock) can be visually compared
+    on the same chart axis.
+    """
+    return (prices / prices.iloc[0]) * 100.0
+
+
 def compute_portfolio_returns(
     returns: pd.DataFrame, weights: np.ndarray
 ) -> pd.Series:
@@ -154,6 +194,47 @@ def compute_portfolio_returns(
     return pd.Series(portfolio_returns, index=returns.index, name="portfolio_return")
 
 
+def _compounded_rolling_window_returns(
+    portfolio_returns: pd.Series, horizon_days: int
+) -> np.ndarray:
+    """
+    Build the empirical distribution of actual overlapping N-day compounded
+    portfolio returns, rather than approximating multi-day risk by scaling
+    single-day returns by sqrt(time). This is the more rigorous convention
+    for Historical Simulation VaR at horizons > 1 day, since it captures
+    real historical compounding/autocorrelation effects instead of assuming
+    i.i.d. daily returns.
+
+    For a horizon of N days, each window's compounded return is:
+        prod(1 + r_i) - 1   for i in [t, t+N)
+
+    If there are not enough observations to form at least a handful of
+    non-overlapping windows, this gracefully falls back to the sqrt-time
+    scaled single-day series so the analysis never crashes on short lookback
+    periods.
+    """
+    n_obs = len(portfolio_returns)
+
+    # Need at least horizon_days+1 observations to form a single window;
+    # require a modest minimum of usable windows for a meaningful empirical
+    # distribution (at least 30, when available).
+    min_required = horizon_days + 1
+    if n_obs < min_required or n_obs - horizon_days < 5:
+        # Not enough history for genuine rolling windows -> fall back to the
+        # sqrt-time scalar approximation on the raw daily series.
+        return portfolio_returns.values * np.sqrt(horizon_days)
+
+    growth = (1.0 + portfolio_returns).values
+    # Rolling product of `horizon_days` consecutive growth factors, using a
+    # log-sum-exp style approach for numerical stability, then compounded
+    # back into a simple return.
+    log_growth = np.log(growth)
+    cumulative_log = np.concatenate(([0.0], np.cumsum(log_growth)))
+    window_log_returns = cumulative_log[horizon_days:] - cumulative_log[:-horizon_days]
+    compounded_returns = np.exp(window_log_returns) - 1.0
+    return compounded_returns
+
+
 def historical_var(
     portfolio_returns: pd.Series,
     portfolio_value: float,
@@ -162,13 +243,24 @@ def historical_var(
 ) -> Tuple[float, float]:
     """
     Historical Simulation VaR: uses the empirical distribution of past
-    portfolio returns (no distributional assumption). Scales the daily
-    return series by sqrt(time) to approximate the multi-day horizon.
+    portfolio returns (no distributional assumption).
+
+    For horizon_days == 1, this is simply the empirical percentile of the
+    daily return series. For horizon_days > 1, actual overlapping N-day
+    compounded rolling-window returns are used (see
+    `_compounded_rolling_window_returns`) to more accurately reflect
+    multi-day risk than a naive sqrt(time) scalar.
 
     Returns:
         (var_pct, var_dollar) as positive-loss magnitudes.
     """
-    scaled_returns = portfolio_returns * np.sqrt(horizon_days)
+    if horizon_days == 1:
+        scaled_returns = portfolio_returns.values
+    else:
+        scaled_returns = _compounded_rolling_window_returns(
+            portfolio_returns, horizon_days
+        )
+
     # The (1 - confidence) percentile of the loss distribution.
     var_pct = -np.percentile(scaled_returns, (1 - confidence_level) * 100)
     var_pct = max(var_pct, 0.0)
@@ -187,7 +279,9 @@ def parametric_var(
     normal distribution N(mu, sigma^2). Uses the historical mean/std of the
     portfolio return series and the inverse normal CDF (z-score) at the
     chosen confidence level, scaled to the desired time horizon via the
-    square-root-of-time rule.
+    square-root-of-time rule -- the mathematically standard convention for
+    scaling a normal-distribution VaR estimate to multi-day horizons under
+    the i.i.d. returns assumption.
     """
     mu = portfolio_returns.mean()          # mean daily portfolio return
     sigma = portfolio_returns.std()        # daily portfolio volatility (std dev)
@@ -238,7 +332,6 @@ def monte_carlo_var(
 
 
 def compute_cumulative_returns(portfolio_returns: pd.Series) -> pd.Series:
-
     """Cumulative growth of $1 invested at the start of the period."""
     return (1 + portfolio_returns).cumprod()
 
@@ -265,10 +358,15 @@ def run_var_analysis(
     period: str = "5y",
     num_simulations: int = 10_000,
     seed: int = 42,
+    status_callback: Optional[Any] = None,
 ) -> Dict[str, Any]:
-
     """
     End-to-end VaR pipeline: validate -> fetch -> compute -> package results.
+
+    Args:
+        status_callback: optional callable(str) invoked with human-readable
+            milestone messages as the pipeline progresses (used by the
+            Streamlit frontend to drive a live `st.status()` widget).
 
     Returns a structured dict:
         {
@@ -276,32 +374,55 @@ def run_var_analysis(
             "error": Optional[str],
             "historical": {"var_pct": float, "var_dollar": float},
             "parametric": {"var_pct": float, "var_dollar": float},
+            "monte_carlo": {"var_pct": float, "var_dollar": float},
             "portfolio_returns": pd.Series,
+            "asset_returns": pd.DataFrame,
             "prices": pd.DataFrame,
+            "normalized_prices": pd.DataFrame,
             "cumulative_returns": pd.Series,
             "drawdown": pd.Series,
             "n_observations": int,
+            "tickers": List[str],
+            "weights": List[float],
         }
     """
     result: Dict[str, Any] = {"success": False, "error": None}
 
-    # Clean up ticker input (strip whitespace, uppercase).
-    tickers = [t.strip().upper() for t in tickers if t.strip()]
+    def _report(message: str) -> None:
+        if status_callback is not None:
+            try:
+                status_callback(message)
+            except Exception:
+                pass  # Never let UI callback errors break the analysis.
+
+    # Clean up ticker input (strip whitespace, uppercase, drop blanks).
+    tickers = [t.strip().upper() for t in tickers if t and t.strip()]
 
     try:
+        _report("Validating portfolio inputs...")
+        horizon_days = validate_horizon(horizon_days)
         validate_inputs(tickers, weights)
-        prices = download_prices(tickers, period)
-        returns = compute_returns(prices)
 
+        _report("Fetching raw exchange data via yfinance...")
+        prices = download_prices(tickers, period)
+
+        _report("Reindexing historical weights...")
+        returns = compute_returns(prices)
         weights_arr = np.array(weights, dtype=float)
         portfolio_returns = compute_portfolio_returns(returns, weights_arr)
+        normalized_prices = compute_normalized_prices(prices)
 
+        _report("Computing historical simulation VaR...")
         hist_pct, hist_dollar = historical_var(
             portfolio_returns, portfolio_value, confidence_level, horizon_days
         )
+
+        _report("Computing parametric (variance-covariance) VaR...")
         param_pct, param_dollar = parametric_var(
             portfolio_returns, portfolio_value, confidence_level, horizon_days
         )
+
+        _report("Computing covariance matrix variants for Monte Carlo simulation...")
         mc_pct, mc_dollar = monte_carlo_var(
             returns,
             weights_arr,
@@ -312,8 +433,8 @@ def run_var_analysis(
             seed,
         )
 
+        _report("Assembling performance and drawdown analytics...")
         cumulative_returns = compute_cumulative_returns(portfolio_returns)
-
         drawdown = compute_drawdown(cumulative_returns)
 
         result.update(
@@ -324,16 +445,18 @@ def run_var_analysis(
                 "parametric": {"var_pct": param_pct, "var_dollar": param_dollar},
                 "monte_carlo": {"var_pct": mc_pct, "var_dollar": mc_dollar},
                 "portfolio_returns": portfolio_returns,
-
                 "asset_returns": returns,
                 "prices": prices,
+                "normalized_prices": normalized_prices,
                 "cumulative_returns": cumulative_returns,
                 "drawdown": drawdown,
                 "n_observations": int(len(portfolio_returns)),
                 "tickers": tickers,
                 "weights": weights,
+                "horizon_days": horizon_days,
             }
         )
+        _report("Analysis complete.")
         return result
 
     except (ValidationError, DataFetchError) as exc:

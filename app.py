@@ -2,7 +2,8 @@
 app.py
 ======
 
-Streamlit frontend for the Portfolio Value at Risk (VaR) Dashboard.
+Streamlit frontend for the Portfolio Value at Risk (VaR) Dashboard —
+a premium, professional-grade quantitative analytics terminal.
 
 Run locally with:
     streamlit run app.py
@@ -20,19 +21,30 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from var_engine import run_var_analysis
+from var_engine import run_var_analysis, MIN_HORIZON_DAYS, MAX_HORIZON_DAYS
 
 # ============================================================
 # Page Configuration
 # ============================================================
 st.set_page_config(
-    page_title="Portfolio VaR Dashboard",
+    page_title="Portfolio VaR Terminal",
     page_icon="📉",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-CONFIDENCE_OPTIONS = {"90%": 0.90, "95%": 0.95, "99%": 0.99}
+# ============================================================
+# Theme Constants
+# ============================================================
+SURFACE_BG = "#131C33"
+BORDER_COLOR = "#22345E"
+ACCENT = "#00E676"
+ACCENT_AMBER = "#FFA600"
+ACCENT_RED = "#FF4B4B"
+TEXT_MUTED = "#8FA3C7"
+
+CONFIDENCE_OPTIONS = ["90%", "95%", "99%"]
+CONFIDENCE_MAP = {"90%": 0.90, "95%": 0.95, "99%": 0.99}
 PERIOD_OPTIONS = {
     "1 Year": "1y",
     "2 Years": "2y",
@@ -43,11 +55,145 @@ PERIOD_OPTIONS = {
 
 
 # ============================================================
+# Premium Custom CSS Injection
+# ============================================================
+def inject_custom_css() -> None:
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background-color: #0B1120;
+        }}
+
+        /* Sidebar */
+        section[data-testid="stSidebar"] {{
+            background-color: {SURFACE_BG};
+            border-right: 1px solid {BORDER_COLOR};
+        }}
+
+        /* Headline typography */
+        h1, h2, h3 {{
+            font-family: 'Helvetica Neue', sans-serif;
+            letter-spacing: 0.3px;
+        }}
+
+        .terminal-header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 18px 24px;
+            background: linear-gradient(135deg, {SURFACE_BG} 0%, #0F1830 100%);
+            border: 1px solid {BORDER_COLOR};
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }}
+        .terminal-header h1 {{
+            font-size: 1.6rem;
+            margin: 0;
+            color: #EAF1FF;
+        }}
+        .terminal-header .accent {{
+            color: {ACCENT};
+        }}
+        .terminal-header p {{
+            margin: 2px 0 0 0;
+            color: {TEXT_MUTED};
+            font-size: 0.85rem;
+        }}
+        .live-pill {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            border: 1px solid {ACCENT};
+            border-radius: 999px;
+            color: {ACCENT};
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }}
+        .live-dot {{
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: {ACCENT};
+            box-shadow: 0 0 6px {ACCENT};
+        }}
+
+        /* Metric / KPI cards */
+        .kpi-card {{
+            background-color: {SURFACE_BG};
+            border: 1px solid {BORDER_COLOR};
+            border-radius: 10px;
+            padding: 16px 18px;
+            height: 100%;
+        }}
+        .kpi-label {{
+            font-size: 0.75rem;
+            color: {TEXT_MUTED};
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            margin-bottom: 6px;
+        }}
+        .kpi-value {{
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #EAF1FF;
+            margin-bottom: 2px;
+        }}
+        .kpi-delta {{
+            font-size: 0.85rem;
+            font-weight: 600;
+        }}
+        .kpi-delta.neg {{ color: {ACCENT_RED}; }}
+        .kpi-delta.neutral {{ color: {TEXT_MUTED}; }}
+        .kpi-accent-bar {{
+            height: 3px;
+            width: 36px;
+            border-radius: 2px;
+            margin-bottom: 10px;
+        }}
+
+        /* Section panels around charts */
+        .panel-title {{
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: #EAF1FF;
+            margin-bottom: 2px;
+        }}
+        .panel-subtitle {{
+            font-size: 0.78rem;
+            color: {TEXT_MUTED};
+            margin-bottom: 10px;
+        }}
+
+        /* Divider */
+        hr {{
+            border-color: {BORDER_COLOR} !important;
+        }}
+
+        /* Dataframe / table styling */
+        [data-testid="stDataFrame"] {{
+            border: 1px solid {BORDER_COLOR};
+            border-radius: 8px;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
 # Helper Functions
 # ============================================================
 def parse_tickers(raw: str) -> List[str]:
-    """Turn a comma-separated ticker string into a clean list."""
-    return [t.strip().upper() for t in raw.split(",") if t.strip()]
+    """Turn a comma-separated ticker string into a clean, de-duplicated list."""
+    seen = []
+    for t in raw.split(","):
+        t_clean = t.strip().upper()
+        if t_clean and t_clean not in seen:
+            seen.append(t_clean)
+    return seen
 
 
 def parse_weights(raw: str, n_tickers: int) -> List[float]:
@@ -55,12 +201,16 @@ def parse_weights(raw: str, n_tickers: int) -> List[float]:
     Parse a comma-separated weight string into floats. Supports both
     fractional (0.25) and percentage-style (25) entries — percentages are
     auto-normalized down to fractions if the values sum closer to 100.
+    Gracefully handles blank input (equal-weighting fallback) and single
+    asset portfolios.
     """
     if not raw.strip():
-        # Default to equal weighting if the user leaves this blank.
         return [round(1.0 / n_tickers, 6)] * n_tickers if n_tickers else []
 
     parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if not parts:
+        return [round(1.0 / n_tickers, 6)] * n_tickers if n_tickers else []
+
     values = [float(p) for p in parts]
 
     # If it looks like percentages (sums closer to 100 than to 1), convert.
@@ -71,68 +221,126 @@ def parse_weights(raw: str, n_tickers: int) -> List[float]:
     return values
 
 
+def kpi_card(label: str, value: str, delta: str, delta_class: str = "neg", accent_color: str = ACCENT) -> str:
+    """Build a styled HTML KPI card block."""
+    return f"""
+    <div class="kpi-card">
+        <div class="kpi-accent-bar" style="background-color:{accent_color};"></div>
+        <div class="kpi-label">{label}</div>
+        <div class="kpi-value">{value}</div>
+        <div class="kpi-delta {delta_class}">{delta}</div>
+    </div>
+    """
+
+
 def build_distribution_chart(
     portfolio_returns: pd.Series,
     var_pct_hist: float,
     var_pct_param: float,
     var_pct_mc: float,
+    confidence_label: str,
+    horizon_days: int,
 ) -> go.Figure:
-
-    """Interactive histogram of historical portfolio returns with VaR markers."""
+    """Elegant Plotly histogram of historical portfolio returns with a
+    prominent styled VaR cutoff line marking the multi-day loss threshold."""
     fig = go.Figure()
 
     fig.add_trace(
         go.Histogram(
             x=portfolio_returns * 100,
             nbinsx=60,
-            marker=dict(color="#4C78F5", line=dict(width=0.5, color="white")),
+            marker=dict(color="#4C78F5", line=dict(width=0.5, color="#0B1120")),
             opacity=0.85,
             name="Daily Portfolio Returns",
         )
     )
 
-    # Historical VaR threshold — dashed bright vertical line.
+    # Primary, prominent cutoff: Historical VaR — the neon accent line.
     fig.add_vline(
         x=-var_pct_hist * 100,
         line_width=3,
         line_dash="dash",
-        line_color="#FF4B4B",
-        annotation_text=f"Historical VaR: -{var_pct_hist:.2%}",
+        line_color=ACCENT,
+        annotation_text=f"Historical VaR ({confidence_label}, {horizon_days}d): -{var_pct_hist:.2%}",
         annotation_position="top left",
-        annotation_font=dict(color="#FF4B4B", size=13),
+        annotation_font=dict(color=ACCENT, size=12),
     )
 
-    # Parametric VaR threshold — second dashed vertical line for comparison.
     fig.add_vline(
         x=-var_pct_param * 100,
-        line_width=3,
-        line_dash="dash",
-        line_color="#FFA600",
-        annotation_text=f"Parametric VaR: -{var_pct_param:.2%}",
+        line_width=2,
+        line_dash="dot",
+        line_color=ACCENT_AMBER,
+        annotation_text=f"Parametric: -{var_pct_param:.2%}",
         annotation_position="top right",
-        annotation_font=dict(color="#FFA600", size=13),
+        annotation_font=dict(color=ACCENT_AMBER, size=11),
     )
 
-    # Monte Carlo VaR threshold — third dashed vertical line for comparison.
     fig.add_vline(
         x=-var_pct_mc * 100,
-        line_width=3,
-        line_dash="dash",
-        line_color="#00E5A0",
-        annotation_text=f"Monte Carlo VaR: -{var_pct_mc:.2%}",
+        line_width=2,
+        line_dash="dot",
+        line_color=ACCENT_RED,
+        annotation_text=f"Monte Carlo: -{var_pct_mc:.2%}",
         annotation_position="bottom right",
-        annotation_font=dict(color="#00E5A0", size=13),
+        annotation_font=dict(color=ACCENT_RED, size=11),
     )
 
     fig.update_layout(
-
-        title="Distribution of Historical Portfolio Returns",
-        xaxis_title="Daily Return (%)",
+        title=None,
+        xaxis_title="Return over horizon (%)",
         yaxis_title="Frequency",
         bargap=0.02,
         template="plotly_dark",
-        height=460,
-        margin=dict(t=60, b=40, l=40, r=40),
+        height=430,
+        margin=dict(t=30, b=40, l=40, r=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        showlegend=False,
+    )
+    return fig
+
+
+def build_asset_performance_chart(normalized_prices: pd.DataFrame) -> go.Figure:
+    """
+    High-fidelity multi-line Plotly chart tracking every individual asset's
+    normalized price path (rebased to 100) over the lookback period, so
+    relative performance can be visually compared regardless of each
+    stock's absolute price level.
+    """
+    palette = [
+        ACCENT, "#4C78F5", ACCENT_AMBER, ACCENT_RED,
+        "#B388FF", "#00B8D9", "#FF7597", "#C6FF00",
+    ]
+    fig = go.Figure()
+    for i, ticker in enumerate(normalized_prices.columns):
+        fig.add_trace(
+            go.Scatter(
+                x=normalized_prices.index,
+                y=normalized_prices[ticker].values,
+                mode="lines",
+                name=ticker,
+                line=dict(color=palette[i % len(palette)], width=2),
+            )
+        )
+
+    fig.add_hline(y=100, line_width=1, line_dash="dot", line_color=TEXT_MUTED)
+
+    fig.update_layout(
+        xaxis_title="Date",
+        yaxis_title="Normalized Value (Base = 100)",
+        template="plotly_dark",
+        height=430,
+        margin=dict(t=30, b=40, l=40, r=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0,
+        ),
     )
     return fig
 
@@ -145,9 +353,9 @@ def build_cumulative_chart(cumulative_returns: pd.Series) -> go.Figure:
             x=cumulative_returns.index,
             y=cumulative_returns.values,
             mode="lines",
-            line=dict(color="#00CC96", width=2),
+            line=dict(color=ACCENT, width=2),
             fill="tozeroy",
-            fillcolor="rgba(0,204,150,0.1)",
+            fillcolor="rgba(0,230,118,0.08)",
             name="Cumulative Growth ($1 invested)",
         )
     )
@@ -158,6 +366,8 @@ def build_cumulative_chart(cumulative_returns: pd.Series) -> go.Figure:
         template="plotly_dark",
         height=420,
         margin=dict(t=60, b=40, l=40, r=40),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
     )
     return fig
 
@@ -170,7 +380,7 @@ def build_drawdown_chart(drawdown: pd.Series) -> go.Figure:
             x=drawdown.index,
             y=drawdown.values * 100,
             mode="lines",
-            line=dict(color="#EF553B", width=2),
+            line=dict(color=ACCENT_RED, width=2),
             fill="tozeroy",
             fillcolor="rgba(239,85,59,0.15)",
             name="Drawdown (%)",
@@ -183,15 +393,22 @@ def build_drawdown_chart(drawdown: pd.Series) -> go.Figure:
         template="plotly_dark",
         height=420,
         margin=dict(t=60, b=40, l=40, r=40),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
     )
     return fig
 
 
 # ============================================================
+# Apply Theme
+# ============================================================
+inject_custom_css()
+
+# ============================================================
 # Sidebar — User Inputs
 # ============================================================
 with st.sidebar:
-    st.title("⚙️ Portfolio Inputs")
+    st.markdown("### ⚙️ Portfolio Inputs")
 
     tickers_raw = st.text_input(
         "Stock Tickers (comma-separated)",
@@ -216,13 +433,21 @@ with st.sidebar:
         format="%.2f",
     )
 
-    confidence_label = st.selectbox(
-        "Confidence Level", options=list(CONFIDENCE_OPTIONS.keys()), index=1
+    confidence_label = st.select_slider(
+        "Confidence Level",
+        options=CONFIDENCE_OPTIONS,
+        value="95%",
+        help="Statistical confidence level for the VaR estimate.",
     )
-    confidence_level = CONFIDENCE_OPTIONS[confidence_label]
+    confidence_level = CONFIDENCE_MAP[confidence_label]
 
     horizon_days = st.slider(
-        "Time Horizon (days)", min_value=1, max_value=20, value=1, step=1
+        "Time Horizon (days)",
+        min_value=MIN_HORIZON_DAYS,
+        max_value=MAX_HORIZON_DAYS,
+        value=1,
+        step=1,
+        help="Multi-day risk horizon, up to 100 days.",
     )
 
     period_label = st.selectbox(
@@ -235,12 +460,19 @@ with st.sidebar:
 
 
 # ============================================================
-# Main Dashboard
+# Main Header
 # ============================================================
-st.title("📉 Portfolio Value at Risk (VaR) Dashboard")
-st.caption(
-    "Analyze downside risk for any custom stock portfolio using live market "
-    "data, Historical Simulation, and Parametric (Variance-Covariance) VaR methods."
+st.markdown(
+    f"""
+    <div class="terminal-header">
+        <div>
+            <h1>📉 Portfolio <span class="accent">VaR</span> Terminal</h1>
+            <p>Historical · Parametric · Monte Carlo risk analytics, powered by live market data</p>
+        </div>
+        <div class="live-pill"><span class="live-dot"></span> LIVE MARKET DATA</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 if run_clicked or "last_result" in st.session_state:
@@ -254,15 +486,26 @@ if run_clicked or "last_result" in st.session_state:
         st.stop()
 
     if run_clicked:
-        with st.spinner("Fetching live market data and computing VaR..."):
-            result = run_var_analysis(
-                tickers=tickers,
-                weights=weights,
-                portfolio_value=portfolio_value,
-                confidence_level=confidence_level,
-                horizon_days=horizon_days,
-                period=period,
-            )
+        status_box = st.status("Initializing risk engine...", expanded=True)
+
+        def _on_status(msg: str) -> None:
+            status_box.write(msg)
+
+        result = run_var_analysis(
+            tickers=tickers,
+            weights=weights,
+            portfolio_value=portfolio_value,
+            confidence_level=confidence_level,
+            horizon_days=horizon_days,
+            period=period,
+            status_callback=_on_status,
+        )
+
+        if result["success"]:
+            status_box.update(label="Analysis complete.", state="complete", expanded=False)
+        else:
+            status_box.update(label="Analysis failed.", state="error", expanded=True)
+
         st.session_state["last_result"] = result
     else:
         result = st.session_state["last_result"]
@@ -275,46 +518,99 @@ if run_clicked or "last_result" in st.session_state:
     hist = result["historical"]
     param = result["parametric"]
     mc = result["monte_carlo"]
+    effective_horizon = result.get("horizon_days", horizon_days)
 
-    with st.container():
-        col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric(
-            label=f"Historical VaR ({confidence_label}, {horizon_days}d)",
-            value=f"${hist['var_dollar']:,.2f}",
-            delta=f"-{hist['var_pct']:.2%}",
-            delta_color="inverse",
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.markdown(
+            kpi_card(
+                f"Historical VaR ({confidence_label}, {effective_horizon}d)",
+                f"${hist['var_dollar']:,.2f}",
+                f"-{hist['var_pct']:.2%}",
+                "neg",
+                ACCENT,
+            ),
+            unsafe_allow_html=True,
         )
-        col2.metric(
-            label=f"Parametric VaR ({confidence_label}, {horizon_days}d)",
-            value=f"${param['var_dollar']:,.2f}",
-            delta=f"-{param['var_pct']:.2%}",
-            delta_color="inverse",
+    with col2:
+        st.markdown(
+            kpi_card(
+                f"Parametric VaR ({confidence_label}, {effective_horizon}d)",
+                f"${param['var_dollar']:,.2f}",
+                f"-{param['var_pct']:.2%}",
+                "neg",
+                ACCENT_AMBER,
+            ),
+            unsafe_allow_html=True,
         )
-        col3.metric(
-            label=f"Monte Carlo VaR ({confidence_label}, {horizon_days}d)",
-            value=f"${mc['var_dollar']:,.2f}",
-            delta=f"-{mc['var_pct']:.2%}",
-            delta_color="inverse",
+    with col3:
+        st.markdown(
+            kpi_card(
+                f"Monte Carlo VaR ({confidence_label}, {effective_horizon}d)",
+                f"${mc['var_dollar']:,.2f}",
+                f"-{mc['var_pct']:.2%}",
+                "neg",
+                ACCENT_RED,
+            ),
+            unsafe_allow_html=True,
         )
-        col4.metric(
-            label="Portfolio Value",
-            value=f"${portfolio_value:,.2f}",
+    with col4:
+        st.markdown(
+            kpi_card(
+                "Portfolio Value",
+                f"${portfolio_value:,.2f}",
+                "Base capital",
+                "neutral",
+                "#4C78F5",
+            ),
+            unsafe_allow_html=True,
         )
-        col5.metric(
-            label="Observations Used",
-            value=f"{result['n_observations']:,}",
+    with col5:
+        st.markdown(
+            kpi_card(
+                "Observations Used",
+                f"{result['n_observations']:,}",
+                f"Lookback: {period_label}",
+                "neutral",
+                "#B388FF",
+            ),
+            unsafe_allow_html=True,
         )
 
+    st.write("")
     st.divider()
 
-    # ---------------- Distribution Chart ----------------
-    st.plotly_chart(
-        build_distribution_chart(
-            result["portfolio_returns"], hist["var_pct"], param["var_pct"], mc["var_pct"]
-        ),
-        use_container_width=True,
-    )
+    # ---------------- Side-by-Side Grid: Distribution | Asset Performance ----------------
+    left_col, right_col = st.columns(2)
 
+    with left_col:
+        st.markdown('<div class="panel-title">📊 Volatility Distribution</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="panel-subtitle">Portfolio return distribution with VaR cutoff thresholds</div>',
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(
+            build_distribution_chart(
+                result["portfolio_returns"],
+                hist["var_pct"],
+                param["var_pct"],
+                mc["var_pct"],
+                confidence_label,
+                effective_horizon,
+            ),
+            use_container_width=True,
+        )
+
+    with right_col:
+        st.markdown('<div class="panel-title">📈 Asset Performance Tracking</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="panel-subtitle">Normalized price paths (base = 100) across all holdings</div>',
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(
+            build_asset_performance_chart(result["normalized_prices"]),
+            use_container_width=True,
+        )
 
     st.divider()
 
@@ -350,14 +646,13 @@ if run_clicked or "last_result" in st.session_state:
             st.info(
                 f"With **{confidence_label}** confidence, this portfolio is not "
                 f"expected to lose more than **${hist['var_dollar']:,.2f}** "
-                f"({hist['var_pct']:.2%}) over the next **{horizon_days} day(s)** "
+                f"({hist['var_pct']:.2%}) over the next **{effective_horizon} day(s)** "
                 f"under the Historical Simulation method, "
                 f"**${param['var_dollar']:,.2f}** ({param['var_pct']:.2%}) under "
                 f"the Parametric (Variance-Covariance) method, or "
                 f"**${mc['var_dollar']:,.2f}** ({mc['var_pct']:.2%}) under the "
                 f"Monte Carlo simulation method."
             )
-
 
 else:
     st.info("👈 Configure your portfolio in the sidebar and click **Run VaR Analysis** to begin.")
