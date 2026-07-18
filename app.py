@@ -88,21 +88,41 @@ ASSET_REGISTRY: List[str] = sorted(set([
     "AAPL", "MSFT", "GOOG", "GOOGL", "AMZN", "META", "NVDA", "TSLA", "AVGO",
     "ORCL", "ADBE", "CRM", "AMD", "INTC", "CSCO", "IBM", "QCOM", "TXN",
     "NOW", "INTU", "UBER", "SHOP", "PANW", "SNOW", "PLTR", "NET", "CRWD",
+    "MU", "ADI", "LRCX", "KLAC", "AMAT", "APH", "ANET", "FTNT", "ADSK",
+    "MSI", "ROP", "CDNS", "SNPS", "WDAY", "TEAM", "DDOG", "ZS", "MDB",
+    "HPQ", "DELL", "NTAP", "STX", "WDC", "JNPR", "HPE", "TER", "GEN",
     # Financials
     "JPM", "BAC", "WFC", "GS", "MS", "C", "AXP", "BLK", "SCHW", "V", "MA",
-    "PYPL",
+    "PYPL", "SPGI", "MMC", "CB", "PGR", "AIG", "MET", "PRU", "TRV", "AFL",
+    "ALL", "COF", "USB", "PNC", "TFC", "BK", "STT", "ICE", "CME", "MCO",
+    "FIS", "FISV", "AON", "AJG",
     # Healthcare
     "UNH", "JNJ", "LLY", "PFE", "MRK", "ABBV", "TMO", "ABT", "DHR", "BMY",
+    "AMGN", "GILD", "CVS", "CI", "ELV", "HUM", "ISRG", "VRTX", "REGN",
+    "ZTS", "SYK", "BSX", "MDT", "BDX", "IDXX", "EW", "HCA", "MRNA", "BIIB",
     # Consumer
     "WMT", "COST", "PG", "KO", "PEP", "MCD", "NKE", "SBUX", "HD", "LOW",
-    "TGT", "DIS", "NFLX",
+    "TGT", "DIS", "NFLX", "CMCSA", "TMUS", "CHTR", "MO", "PM", "CL",
+    "KMB", "GIS", "KHC", "STZ", "MDLZ", "HSY", "EL", "YUM", "MAR", "BKNG",
+    "ORLY", "AZO", "TJX", "ROST", "DG", "DLTR", "EBAY", "ETSY", "ABNB",
     # Industrials & Energy
     "XOM", "CVX", "CAT", "BA", "GE", "HON", "UPS", "RTX", "LMT", "DE",
-    # Broad Market & Sector ETFs
-    "SPY", "VOO", "QQQ", "DIA", "IWM", "VTI", "ARKK", "XLF", "XLE", "XLK",
-    "XLV", "GLD", "SLV", "TLT", "HYG",
+    "COP", "SLB", "EOG", "PXD", "MPC", "PSX", "VLO", "OXY", "WMB", "KMI",
+    "NOC", "GD", "TDG", "ITW", "EMR", "ETN", "PH", "CMI", "FDX", "NSC",
+    "UNP", "CSX", "WM", "RSG",
+    # Utilities, Real Estate & Materials
+    "NEE", "DUK", "SO", "D", "AEP", "EXC", "SRE", "XEL", "ED", "PEG",
+    "AMT", "PLD", "CCI", "EQIX", "PSA", "O", "SPG", "DLR", "WELL", "AVB",
+    "LIN", "APD", "SHW", "ECL", "FCX", "NEM", "DOW", "DD", "PPG",
+    # Communication Services
+    "T", "VZ", "EA", "TTWO", "WBD", "PARA", "LYV", "MTCH", "PINS", "SNAP",
+    # Broad Market, Sector & Global Index ETFs
+    "SPY", "VOO", "IVV", "QQQ", "DIA", "IWM", "VTI", "ARKK", "XLF", "XLE",
+    "XLK", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC", "SMH",
+    "GLD", "SLV", "TLT", "IEF", "HYG", "LQD", "AGG", "BND", "EFA", "EEM",
+    "VEA", "VWO", "VGK", "EWJ", "FXI", "ACWI", "URTH",
     # Crypto Anchors
-    "BTC-USD", "ETH-USD", "SOL-USD",
+    "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD",
 ]))
 
 # Ticker -> corporate domain map, used to resolve logo avatars via the
@@ -119,26 +139,77 @@ TICKER_DOMAINS: Dict[str, str] = {
     "NOW": "servicenow.com", "INTU": "intuit.com", "UBER": "uber.com",
     "SHOP": "shopify.com", "PANW": "paloaltonetworks.com",
     "SNOW": "snowflake.com", "PLTR": "palantir.com", "NET": "cloudflare.com",
-    "CRWD": "crowdstrike.com",
+    "CRWD": "crowdstrike.com", "MU": "micron.com", "ADI": "analog.com",
+    "LRCX": "lamresearch.com", "KLAC": "kla.com", "AMAT": "appliedmaterials.com",
+    "APH": "amphenol.com", "ANET": "arista.com", "FTNT": "fortinet.com",
+    "ADSK": "autodesk.com", "MSI": "motorolasolutions.com", "ROP": "ropertech.com",
+    "CDNS": "cadence.com", "SNPS": "synopsys.com", "WDAY": "workday.com",
+    "TEAM": "atlassian.com", "DDOG": "datadoghq.com", "ZS": "zscaler.com",
+    "MDB": "mongodb.com", "HPQ": "hp.com", "DELL": "dell.com",
+    "NTAP": "netapp.com", "STX": "seagate.com", "WDC": "westerndigital.com",
+    "JNPR": "juniper.net", "HPE": "hpe.com", "GEN": "gendigital.com",
     "JPM": "jpmorganchase.com", "BAC": "bankofamerica.com",
     "WFC": "wellsfargo.com", "GS": "goldmansachs.com", "MS": "morganstanley.com",
     "C": "citigroup.com", "AXP": "americanexpress.com", "BLK": "blackrock.com",
     "SCHW": "schwab.com", "V": "visa.com", "MA": "mastercard.com",
-    "PYPL": "paypal.com",
+    "PYPL": "paypal.com", "SPGI": "spglobal.com", "MMC": "marshmclennan.com",
+    "CB": "chubb.com", "PGR": "progressive.com", "AIG": "aig.com",
+    "MET": "metlife.com", "PRU": "prudential.com", "TRV": "travelers.com",
+    "AFL": "aflac.com", "ALL": "allstate.com", "COF": "capitalone.com",
+    "USB": "usbank.com", "PNC": "pnc.com", "TFC": "truist.com",
+    "BK": "bnymellon.com", "STT": "statestreet.com", "ICE": "ice.com",
+    "CME": "cmegroup.com", "MCO": "moodys.com", "FIS": "fisglobal.com",
+    "AON": "aon.com",
     "UNH": "unitedhealthgroup.com", "JNJ": "jnj.com", "LLY": "lilly.com",
     "PFE": "pfizer.com", "MRK": "merck.com", "ABBV": "abbvie.com",
     "TMO": "thermofisher.com", "ABT": "abbott.com", "DHR": "danaher.com",
-    "BMY": "bms.com",
+    "BMY": "bms.com", "AMGN": "amgen.com", "GILD": "gilead.com",
+    "CVS": "cvshealth.com", "CI": "cigna.com", "ELV": "elevancehealth.com",
+    "HUM": "humana.com", "ISRG": "intuitive.com", "VRTX": "vrtx.com",
+    "REGN": "regeneron.com", "ZTS": "zoetis.com", "SYK": "stryker.com",
+    "BSX": "bostonscientific.com", "MDT": "medtronic.com", "BDX": "bd.com",
+    "IDXX": "idexx.com", "EW": "edwards.com", "HCA": "hcahealthcare.com",
+    "MRNA": "modernatx.com", "BIIB": "biogen.com",
     "WMT": "walmart.com", "COST": "costco.com", "PG": "pg.com",
     "KO": "coca-cola.com", "PEP": "pepsico.com", "MCD": "mcdonalds.com",
     "NKE": "nike.com", "SBUX": "starbucks.com", "HD": "homedepot.com",
     "LOW": "lowes.com", "TGT": "target.com", "DIS": "disney.com",
-    "NFLX": "netflix.com",
+    "NFLX": "netflix.com", "CMCSA": "comcastcorporation.com",
+    "TMUS": "t-mobile.com", "CHTR": "charter.com", "MO": "altria.com",
+    "PM": "pmi.com", "CL": "colgatepalmolive.com", "KMB": "kimberly-clark.com",
+    "GIS": "generalmills.com", "KHC": "kraftheinzcompany.com",
+    "STZ": "cbrands.com", "MDLZ": "mondelezinternational.com",
+    "HSY": "thehersheycompany.com", "EL": "elcompanies.com",
+    "YUM": "yum.com", "MAR": "marriott.com", "BKNG": "bookingholdings.com",
+    "ORLY": "oreillyauto.com", "AZO": "autozone.com", "TJX": "tjx.com",
+    "ROST": "rossstores.com", "DG": "dollargeneral.com", "DLTR": "dollartree.com",
+    "EBAY": "ebay.com", "ETSY": "etsy.com", "ABNB": "airbnb.com",
     "XOM": "exxonmobil.com", "CVX": "chevron.com", "CAT": "caterpillar.com",
     "BA": "boeing.com", "GE": "ge.com", "HON": "honeywell.com",
     "UPS": "ups.com", "RTX": "rtx.com", "LMT": "lockheedmartin.com",
-    "DE": "deere.com",
+    "DE": "deere.com", "COP": "conocophillips.com", "SLB": "slb.com",
+    "EOG": "eogresources.com", "MPC": "marathonpetroleum.com",
+    "PSX": "phillips66.com", "VLO": "valero.com", "OXY": "oxy.com",
+    "WMB": "williams.com", "KMI": "kindermorgan.com", "NOC": "northropgrumman.com",
+    "GD": "gd.com", "TDG": "transdigm.com", "ITW": "itw.com",
+    "EMR": "emerson.com", "ETN": "eaton.com", "PH": "parker.com",
+    "CMI": "cummins.com", "FDX": "fedex.com", "NSC": "nscorp.com",
+    "UNP": "up.com", "CSX": "csx.com", "WM": "wm.com", "RSG": "republicservices.com",
+    "NEE": "nexteraenergy.com", "DUK": "duke-energy.com", "SO": "southerncompany.com",
+    "D": "dominionenergy.com", "AEP": "aep.com", "EXC": "exeloncorp.com",
+    "SRE": "sempra.com", "XEL": "xcelenergy.com", "ED": "coned.com",
+    "PEG": "pseg.com", "AMT": "americantower.com", "PLD": "prologis.com",
+    "CCI": "crowncastle.com", "EQIX": "equinix.com", "PSA": "publicstorage.com",
+    "O": "realtyincome.com", "SPG": "simon.com", "DLR": "digitalrealty.com",
+    "WELL": "welltower.com", "AVB": "avalonbay.com", "LIN": "linde.com",
+    "APD": "airproducts.com", "SHW": "sherwin-williams.com", "ECL": "ecolab.com",
+    "FCX": "fcx.com", "NEM": "newmont.com", "DOW": "dow.com", "DD": "dupont.com",
+    "PPG": "ppg.com", "T": "att.com", "VZ": "verizon.com", "EA": "ea.com",
+    "TTWO": "take2games.com", "WBD": "wbd.com", "PARA": "paramount.com",
+    "LYV": "livenationentertainment.com", "MTCH": "mtch.com",
+    "PINS": "pinterest.com", "SNAP": "snap.com",
 }
+
 
 CLEARBIT_LOGO_URL = "https://logo.clearbit.com/{domain}"
 
@@ -355,7 +426,22 @@ def inject_finfy_theme() -> None:
         }}
         .finfy-chip .finfy-avatar {{ width: 18px; height: 18px; border-radius: 5px; }}
 
+        /* ---------------- Responsive Flexbox Composition Grid ---------------- */
+        /* Wraps elegantly whether the portfolio holds 3 assets or 35+,
+           instead of being constrained to a fixed number of st.columns. */
+        .finfy-flex-grid {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }}
+        .finfy-flex-grid .finfy-asset-row {{
+            flex: 1 1 220px;
+            max-width: 320px;
+            margin-bottom: 0;
+        }}
+
         hr {{ border-color: {BORDER_STRONG} !important; }}
+
 
         [data-testid="stDataFrame"] {{
             border: 1px solid {BORDER_STRONG}; border-radius: 10px; font-family: {MONO_FONT};
@@ -477,7 +563,13 @@ def render_avatar_html(ticker: str, size: int = 28) -> str:
 
 
 def render_portfolio_composition(tickers: List[str], weights: List[float]) -> None:
-    """Render the 'Portfolio Composition' panel: logo avatar + ticker + weight per row."""
+    """
+    Render the 'Portfolio Composition' panel as a single responsive
+    flexbox grid (display:flex; flex-wrap:wrap;) rather than a fixed
+    st.columns() layout, so that whether the portfolio holds 3 assets or
+    35+, the corporate logo cards wrap elegantly across the available
+    width instead of overflowing or leaving a hard-coded column count.
+    """
     rows = []
     for t, w in zip(tickers, weights):
         avatar_html = render_avatar_html(t, size=28)
@@ -486,7 +578,8 @@ def render_portfolio_composition(tickers: List[str], weights: List[float]) -> No
             f'<span class="finfy-asset-ticker">{t}</span>'
             f'<span class="finfy-asset-weight">{w:.2%}</span></div>'
         )
-    st.markdown("".join(rows), unsafe_allow_html=True)
+    st.markdown(f'<div class="finfy-flex-grid">{"".join(rows)}</div>', unsafe_allow_html=True)
+
 
 
 def render_ticker_chips(tickers: List[str]) -> None:
@@ -684,27 +777,47 @@ with st.sidebar:
 
     st.markdown(
         f"<div style='font-family:{MONO_FONT}; font-size:0.7rem; color:{TEXT_MUTED}; "
-        f"text-transform:uppercase; letter-spacing:0.5px; margin: 10px 0 4px 0;'>Allocation Weights</div>",
+        f"text-transform:uppercase; letter-spacing:0.5px; margin: 10px 0 4px 0;'>Asset Weight Management</div>",
         unsafe_allow_html=True,
     )
 
-    # Per-ticker numeric weight input, replacing the old comma-split text
-    # field entirely. Defaults to an equal-weight split.
+    # Track the currently selected ticker set so we know when the universe
+    # changes (added/removed tickers) vs. a simple rerun, which lets the
+    # "Equally Rebalance Portfolio" action know exactly which keys to reset.
+    if tickers:
+        rebalance_clicked = st.button(
+            "⚖️ Equally Rebalance Portfolio",
+            use_container_width=True,
+            help="Instantly redistribute weights equally (1/N) across all selected assets.",
+        )
+        if rebalance_clicked:
+            equal_share = round(100.0 / len(tickers), 4)
+            for t in tickers:
+                st.session_state[f"weight_{t}"] = equal_share
+
+    # Dynamic Input Grid Generation: loop through however many tickers were
+    # returned by the multiselect -- no hardcoded columns/rows -- and wrap
+    # the resulting per-ticker weight sliders in a fixed-height, scrollable
+    # container so selecting 10, 20, or 30+ assets never clutters the
+    # sidebar vertically.
     raw_weights: List[float] = []
     if tickers:
         equal_share = round(100.0 / len(tickers), 2)
-        for t in tickers:
-            w = st.number_input(
-                f"{t} weight (%)",
-                min_value=0.0,
-                max_value=100.0,
-                value=equal_share,
-                step=1.0,
-                key=f"weight_{t}",
-            )
-            raw_weights.append(w)
+        weight_panel = st.container(height=300, border=True)
+        with weight_panel:
+            for t in tickers:
+                w = st.number_input(
+                    f"{t} weight (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=st.session_state.get(f"weight_{t}", equal_share),
+                    step=1.0,
+                    key=f"weight_{t}",
+                )
+                raw_weights.append(w)
     else:
         st.caption("Select at least one ticker above to configure weights.")
+
 
     st.divider()
 
@@ -811,11 +924,12 @@ if run_clicked or "last_result" in st.session_state:
         """,
         unsafe_allow_html=True,
     )
-    comp_cols = st.columns(min(len(portfolio["tickers"]), 6) or 1)
-    for idx, (t, w) in enumerate(zip(portfolio["tickers"], portfolio["weights"])):
-        with comp_cols[idx % len(comp_cols)]:
-            render_portfolio_composition([t], [w])
+    # Responsive flexbox grid -- renders every holding in a single wrapped
+    # container so 3 assets or 35+ assets both lay out elegantly without
+    # relying on a fixed st.columns() count.
+    render_portfolio_composition(portfolio["tickers"], portfolio["weights"])
     st.markdown("</div>", unsafe_allow_html=True)
+
 
     st.write("")
 

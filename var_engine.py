@@ -128,6 +128,15 @@ def download_prices(tickers: List[str], period: str) -> pd.DataFrame:
     """
     Download historical adjusted close prices for the given tickers.
 
+    Scales cleanly to enterprise-grade portfolios containing dozens of
+    tickers. As the number of selected assets grows, the odds of any single
+    name having sparse/misaligned trading-day history (different listing
+    dates, exchange holidays, thin-volume names, etc.) rises sharply -- so
+    once all tickers are aligned onto a common trading-day index, small
+    interior gaps are filled via forward-fill then backward-fill rather
+    than dropping otherwise-valid rows or raising, which would otherwise
+    needlessly shrink the usable history for the whole portfolio.
+
     Args:
         tickers: list of ticker symbols, e.g. ["AAPL", "MSFT"].
         period: yfinance period string, e.g. "1y", "3y", "5y".
@@ -159,7 +168,8 @@ def download_prices(tickers: List[str], period: str) -> pd.DataFrame:
             "tickers are valid and try again."
         )
 
-    # Detect tickers that came back entirely empty (invalid symbol).
+    # Detect tickers that came back *entirely* empty (invalid symbol) --
+    # these must still hard-fail, since there is nothing to fill.
     missing = [t for t in tickers if t not in data.columns or data[t].isna().all()]
     if missing:
         raise DataFetchError(
@@ -167,7 +177,27 @@ def download_prices(tickers: List[str], period: str) -> pd.DataFrame:
             "Please verify the symbol(s) are correct."
         )
 
-    data = data[tickers].dropna(how="any")
+    data = data[tickers]
+
+    # Data Completeness: align all tickers onto the full common trading-day
+    # index first, then fill interior/edge gaps (a later IPO, a holiday
+    # mismatch across exchanges, a thinly-traded name, etc.) via forward-
+    # fill followed by backward-fill, instead of dropping rows. This keeps
+    # the full lookback history usable even as the portfolio scales to
+    # dozens of large-cap, ETF, and crypto tickers with heterogeneous
+    # trading calendars.
+    data = data.ffill().bfill()
+
+    # Any column that is still entirely NaN after fill (e.g. a ticker with
+    # zero overlap with the rest of the universe) cannot be salvaged.
+    still_missing = [t for t in tickers if data[t].isna().all()]
+    if still_missing:
+        raise DataFetchError(
+            f"No usable data found for ticker(s): {', '.join(still_missing)} "
+            "after gap-filling. Please verify the symbol(s) are correct."
+        )
+
+    data = data.dropna(how="any")
 
     if data.empty or len(data) < 3:
         raise DataFetchError(
@@ -176,6 +206,7 @@ def download_prices(tickers: List[str], period: str) -> pd.DataFrame:
         )
 
     return data
+
 
 
 # ============================================================
