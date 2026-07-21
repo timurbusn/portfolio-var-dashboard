@@ -308,13 +308,59 @@ if run_clicked or "last_result" in st.session_state:
 
     st.write("")
 
+    # ---------------- Expected Shortfall (CVaR) Metrics ----------------
+    st.subheader("Expected Shortfall (Tail Loss / CVaR)")
+    st.caption(
+        "The average magnitude of loss in the worst-case scenarios that "
+        "fall beyond the VaR boundary -- a deeper measure of tail risk than "
+        "VaR alone."
+    )
+    cvar_col1, cvar_col2, cvar_col3 = st.columns(3)
+    with cvar_col1:
+        st.metric(
+            f"Historical CVaR ({eff_confidence_label}, {eff_horizon}D)",
+            f"${hist['cvar_dollar']:,.2f}",
+            f"-{hist['cvar_pct']:.2%}",
+            delta_color="inverse",
+        )
+    with cvar_col2:
+        st.metric(
+            f"Parametric CVaR ({eff_confidence_label}, {eff_horizon}D)",
+            f"${param['cvar_dollar']:,.2f}",
+            f"-{param['cvar_pct']:.2%}",
+            delta_color="inverse",
+        )
+    with cvar_col3:
+        st.metric(
+            f"Monte Carlo CVaR ({eff_confidence_label}, {eff_horizon}D)",
+            f"${mc['cvar_dollar']:,.2f}",
+            f"-{mc['cvar_pct']:.2%}",
+            delta_color="inverse",
+        )
+
+    with st.expander("Advanced: Cornish-Fisher Fat-Tail Adjusted VaR"):
+        st.caption(
+            "Corrects the standard Parametric VaR's normal-distribution "
+            "assumption for the portfolio's empirical skewness and excess "
+            "kurtosis, producing a more realistic estimate when returns "
+            "exhibit fat tails or asymmetry."
+        )
+        st.metric(
+            f"Cornish-Fisher Adjusted VaR ({eff_confidence_label}, {eff_horizon}D)",
+            f"${param['cf_var_dollar']:,.2f}",
+            f"-{param['cf_var_pct']:.2%}",
+            delta_color="inverse",
+        )
+
+    st.write("")
+
     # ---------------- Charts ----------------
     left_col, right_col = st.columns(2)
     with left_col:
         st.subheader("Asset Performance Tracking")
         st.plotly_chart(
             build_asset_performance_chart(market_data["normalized_prices"]),
-            use_container_width=True,
+            width="stretch",
         )
     with right_col:
         st.subheader("Risk Tail Distribution")
@@ -322,7 +368,7 @@ if run_clicked or "last_result" in st.session_state:
             build_risk_tail_chart(
                 portfolio["returns"], hist["var_pct"], eff_confidence_label, eff_horizon
             ),
-            use_container_width=True,
+            width="stretch",
         )
 
     st.write("")
@@ -331,10 +377,10 @@ if run_clicked or "last_result" in st.session_state:
     tab1, tab2, tab3 = st.tabs(["Portfolio Performance", "Drawdown", "Portfolio Details"])
 
     with tab1:
-        st.plotly_chart(build_cumulative_chart(portfolio["cumulative_returns"]), use_container_width=True)
+        st.plotly_chart(build_cumulative_chart(portfolio["cumulative_returns"]), width="stretch")
 
     with tab2:
-        st.plotly_chart(build_drawdown_chart(portfolio["drawdown"]), use_container_width=True)
+        st.plotly_chart(build_drawdown_chart(portfolio["drawdown"]), width="stretch")
 
     with tab3:
         detail_df = pd.DataFrame(
@@ -346,7 +392,7 @@ if run_clicked or "last_result" in st.session_state:
         col_a, col_b = st.columns([1, 2])
         with col_a:
             st.subheader("Holdings")
-            st.dataframe(detail_df, use_container_width=True, hide_index=True)
+            st.dataframe(detail_df, width="stretch", hide_index=True)
         with col_b:
             st.subheader("Interpretation")
             st.info(
@@ -357,8 +403,16 @@ if run_clicked or "last_result" in st.session_state:
                 f"**${param['var_dollar']:,.2f}** ({param['var_pct']:.2%}) under "
                 f"the Parametric (Variance-Covariance) method, or "
                 f"**${mc['var_dollar']:,.2f}** ({mc['var_pct']:.2%}) under the "
-                f"Monte Carlo simulation method."
+                f"Monte Carlo simulation method. If losses do exceed this VaR "
+                f"threshold, the expected (average) loss in those worst-case "
+                f"scenarios -- the Expected Shortfall / CVaR -- is "
+                f"**${hist['cvar_dollar']:,.2f}** ({hist['cvar_pct']:.2%}) under "
+                f"Historical Simulation, **${param['cvar_dollar']:,.2f}** "
+                f"({param['cvar_pct']:.2%}) under the Parametric method, and "
+                f"**${mc['cvar_dollar']:,.2f}** ({mc['cvar_pct']:.2%}) under "
+                f"Monte Carlo simulation."
             )
+
 
 else:
     st.info("Select tickers and configure weights in the sidebar, then click **Run Analysis** to begin.")

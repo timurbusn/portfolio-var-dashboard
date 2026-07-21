@@ -28,6 +28,17 @@ Design notes:
       or free-text parsing performed anywhere in this module. Validation
       still guards against malformed/edge-case input (duplicates, mismatched
       lengths, non-positive weight sums, single-asset portfolios, etc.).
+    - Institutional-grade tail-risk metrics: every VaR model also reports
+      Expected Shortfall / Conditional VaR (the average loss magnitude
+      *beyond* the VaR cutoff), and the Parametric model additionally
+      reports a Cornish-Fisher-adjusted VaR that corrects the standard
+      normal quantile for empirical skewness and excess kurtosis (fat
+      tails), which the plain Gaussian assumption underestimates.
+    - The Monte Carlo engine simulates true multi-day, correlated
+      Geometric Brownian Motion price paths (via Cholesky decomposition of
+      the asset covariance matrix) rather than a single sqrt-time-scaled
+      normal draw, fully vectorized across all simulations and trading
+      days with no Python-level simulation loop.
 """
 
 from __future__ import annotations
@@ -275,12 +286,29 @@ def _compounded_rolling_window_returns(
     return compounded_returns
 
 
+def _expected_shortfall_from_sample(
+    sample_returns: np.ndarray, var_pct: float
+) -> float:
+    """
+    Empirical Expected Shortfall (Conditional VaR): the mean magnitude of
+    loss across all sample observations that fall at or beyond the VaR
+    cutoff (i.e. the average of the tail *worse* than the VaR boundary
+    itself). Falls back to `var_pct` if the tail sample is empty (e.g. an
+    extremely short lookback window), so CVaR >= VaR always holds.
+    """
+    tail = sample_returns[sample_returns <= -var_pct]
+    if tail.size == 0:
+        return var_pct
+    cvar_pct = -float(tail.mean())
+    return max(cvar_pct, var_pct)
+
+
 def historical_var(
     portfolio_returns: pd.Series,
     portfolio_value: float,
     confidence_level: float,
     horizon_days: int,
-) -> Tuple[float, float]:
+) -> Tuple[float, float, float, float]:
     """
     Historical Simulation VaR: uses the empirical distribution of past
     portfolio returns (no distributional assumption).
@@ -291,8 +319,13 @@ def historical_var(
     `_compounded_rolling_window_returns`) to more accurately reflect
     multi-day risk than a naive sqrt(time) scalar.
 
+    Also computes Historical Expected Shortfall (CVaR): the average
+    magnitude of loss across all historical (or rolling-window) return
+    observations that fall at or beyond the VaR cutoff.
+
     Returns:
-        (var_pct, var_dollar) as positive-loss magnitudes.
+        (var_pct, var_dollar, cvar_pct, cvar_dollar) as positive-loss
+        magnitudes.
     """
     if horizon_days == 1:
         scaled_returns = portfolio_returns.values
@@ -304,7 +337,11 @@ def historical_var(
     var_pct = -np.percentile(scaled_returns, (1 - confidence_level) * 100)
     var_pct = max(var_pct, 0.0)
     var_dollar = var_pct * portfolio_value
-    return float(var_pct), float(var_dollar)
+
+    cvar_pct = _expected_shortfall_from_sample(scaled_returns, var_pct)
+    cvar_dollar = cvar_pct * portfolio_value
+
+    return float(var_pct), float(var_dollar), float(cvar_pct), float(cvar_dollar)
 
 
 def parametric_var(
@@ -312,7 +349,7 @@ def parametric_var(
     portfolio_value: float,
     confidence_level: float,
     horizon_days: int,
-) -> Tuple[float, float]:
+) -> Tuple[float, float, float, float, float, float]:
     """
     Parametric (Variance-Covariance) VaR: assumes portfolio returns follow a
     normal distribution N(mu, sigma^2). Uses the historical mean/std of the
@@ -322,15 +359,71 @@ def parametric_var(
     scaling a normal-distribution VaR estimate to multi-day horizons under
     the i.i.d. returns assumption. This scaling remains numerically stable
     even at macro-scale horizons (up to 100 days).
+
+    Also reports two additional institutional-grade tail-risk metrics:
+
+    1. Parametric Expected Shortfall (CVaR), using the closed-form normal
+       tail-expectation formula:
+           CVaR = -(mu*T) + sigma*sqrt(T) * phi(z_alpha) / (1 - confidence)
+       where phi is the standard normal PDF and z_alpha = Phi^-1(1 - confidence).
+
+    2. Cornish-Fisher-adjusted VaR, which corrects the standard normal
+       quantile z_alpha for empirical skewness (S) and excess kurtosis (K)
+       of the portfolio return series -- capturing fat tails and return
+       asymmetry that the plain Gaussian assumption misses:
+           z_CF = z + (S/6)(z^2 - 1) + (K/24)(z^3 - 3z) - (S^2/36)(2z^3 - 5z)
+       and then applying z_CF in place of z in the standard VaR formula.
+
+    Returns:
+        (var_pct, var_dollar, cvar_pct, cvar_dollar,
+         cf_var_pct, cf_var_dollar)
     """
     mu = portfolio_returns.mean()
     sigma = portfolio_returns.std()
     z_score = norm.ppf(1 - confidence_level)
 
+    # --- Standard Gaussian Parametric VaR ---
     var_pct = -(mu * horizon_days + z_score * sigma * np.sqrt(horizon_days))
     var_pct = max(var_pct, 0.0)
     var_dollar = var_pct * portfolio_value
-    return float(var_pct), float(var_dollar)
+
+    # --- Parametric Expected Shortfall (closed-form normal tail mean) ---
+    tail_probability = 1 - confidence_level
+    cvar_pct = -(mu * horizon_days) + sigma * np.sqrt(horizon_days) * (
+        norm.pdf(z_score) / tail_probability
+    )
+    cvar_pct = max(cvar_pct, var_pct)
+    cvar_dollar = cvar_pct * portfolio_value
+
+    # --- Cornish-Fisher Expansion (fat tails / skewness correction) ---
+    # Guard against NaN skew/kurtosis on extremely short return samples
+    # (pandas returns NaN for skew/kurt with fewer than ~4 observations).
+    skew = portfolio_returns.skew()
+    kurt = portfolio_returns.kurt()  # excess kurtosis (pandas default, Fisher's definition)
+    skew = 0.0 if pd.isna(skew) else float(skew)
+    kurt = 0.0 if pd.isna(kurt) else float(kurt)
+
+    z2 = z_score ** 2
+    z3 = z_score ** 3
+    z_cf = (
+        z_score
+        + (skew / 6.0) * (z2 - 1)
+        + (kurt / 24.0) * (z3 - 3 * z_score)
+        - (skew ** 2 / 36.0) * (2 * z3 - 5 * z_score)
+    )
+
+    cf_var_pct = -(mu * horizon_days + z_cf * sigma * np.sqrt(horizon_days))
+    cf_var_pct = max(cf_var_pct, 0.0)
+    cf_var_dollar = cf_var_pct * portfolio_value
+
+    return (
+        float(var_pct),
+        float(var_dollar),
+        float(cvar_pct),
+        float(cvar_dollar),
+        float(cf_var_pct),
+        float(cf_var_dollar),
+    )
 
 
 def monte_carlo_var(
@@ -341,31 +434,85 @@ def monte_carlo_var(
     horizon_days: int,
     num_simulations: int = 10_000,
     seed: int = 42,
-) -> Tuple[float, float]:
+) -> Tuple[float, float, float, float]:
     """
-    Monte Carlo VaR: simulates many possible future asset return paths by
-    sampling from a multivariate normal distribution parameterized by the
-    historical mean vector and covariance matrix of asset returns (scaled to
-    the chosen time horizon), then projects each simulated path onto the
-    portfolio via the weight vector and takes the empirical percentile of
-    the resulting simulated portfolio returns. Works cleanly for a single
-    asset too, since the covariance matrix collapses to a 1x1 matrix.
+    Monte Carlo VaR: simulates true multi-day, correlated Geometric Brownian
+    Motion (GBM) asset price paths rather than a single sqrt-time-scaled
+    normal draw.
+
+    Methodology:
+        1. Decompose the daily asset covariance matrix via Cholesky
+           decomposition (Sigma = L @ L.T) so independent standard-normal
+           shocks can be correlated across assets: shock = Z @ L.T.
+        2. For each of `horizon_days` trading days, draw a fresh
+           (num_simulations x n_assets) tensor of correlated daily log-
+           return shocks and apply the discrete GBM update:
+               daily_log_return = (mu - 0.5*sigma^2) + sqrt(dt)*correlated_shock
+           Because GBM log-returns are additive across time steps, the full
+           T-day path is obtained by summing the T daily log-return
+           increments -- this is mathematically identical to stepping the
+           simulation day-by-day, but fully vectorized (a single NumPy
+           tensor operation across the time axis) rather than a slow
+           Python-level loop over each of the `num_simulations` paths.
+        3. Convert each simulation's cumulative log-return to a simple
+           terminal return per asset, then project onto the portfolio via
+           the (normalized) weight vector to obtain `num_simulations`
+           simulated portfolio-level returns over the full horizon.
+        4. VaR = the empirical percentile of the simulated portfolio
+           returns; CVaR = the mean loss across all simulated paths whose
+           loss meets or exceeds the VaR cutoff.
+
+    Works cleanly for a single asset too, since the covariance matrix
+    collapses to a 1x1 matrix and its Cholesky factor is simply its
+    standard deviation.
+
+    Returns:
+        (var_pct, var_dollar, cvar_pct, cvar_dollar)
     """
     rng = np.random.default_rng(seed)
     mean_returns = returns.mean().values
     cov_matrix = returns.cov().values
+    n_assets = len(mean_returns)
 
-    simulated_asset_returns = rng.multivariate_normal(
-        mean_returns * horizon_days,
-        cov_matrix * horizon_days,
-        size=num_simulations,
-    )
+    # Cholesky decomposition of the daily covariance matrix, with a tiny
+    # diagonal jitter fallback in case of a near-singular covariance matrix
+    # (e.g. two nearly perfectly-correlated assets).
+    try:
+        chol_factor = np.linalg.cholesky(cov_matrix)
+    except np.linalg.LinAlgError:
+        jitter = 1e-10 * np.eye(n_assets)
+        chol_factor = np.linalg.cholesky(cov_matrix + jitter)
+
+    asset_variance = np.diag(cov_matrix)
+    drift = mean_returns - 0.5 * asset_variance  # GBM log-return drift term
+    dt = 1.0  # one trading day per step
+
+    if horizon_days == 1:
+        # Fast path: a single correlated-shock draw is sufficient.
+        z = rng.standard_normal((num_simulations, n_assets))
+        correlated_shocks = z @ chol_factor.T
+        cumulative_log_returns = drift + np.sqrt(dt) * correlated_shocks
+    else:
+        # True multi-day path simulation: draw one correlated shock tensor
+        # per trading day across the full horizon, then accumulate the
+        # daily log-return increments (vectorized over the time axis --
+        # no Python-level loop over simulations).
+        z = rng.standard_normal((horizon_days, num_simulations, n_assets))
+        correlated_shocks = z @ chol_factor.T  # (horizon_days, num_simulations, n_assets)
+        daily_log_returns = drift + np.sqrt(dt) * correlated_shocks
+        cumulative_log_returns = daily_log_returns.sum(axis=0)  # (num_simulations, n_assets)
+
+    simulated_asset_returns = np.exp(cumulative_log_returns) - 1.0
     simulated_portfolio_returns = simulated_asset_returns @ weights
 
     var_pct = -np.percentile(simulated_portfolio_returns, (1 - confidence_level) * 100)
     var_pct = max(var_pct, 0.0)
     var_dollar = var_pct * portfolio_value
-    return float(var_pct), float(var_dollar)
+
+    cvar_pct = _expected_shortfall_from_sample(simulated_portfolio_returns, var_pct)
+    cvar_dollar = cvar_pct * portfolio_value
+
+    return float(var_pct), float(var_dollar), float(cvar_pct), float(cvar_dollar)
 
 
 def compute_cumulative_returns(portfolio_returns: pd.Series) -> pd.Series:
@@ -431,9 +578,19 @@ def run_var_analysis(
                 "confidence_level": float,
             },
             "risk_metrics": {
-                "historical": {"var_pct": float, "var_dollar": float},
-                "parametric": {"var_pct": float, "var_dollar": float},
-                "monte_carlo": {"var_pct": float, "var_dollar": float},
+                "historical": {
+                    "var_pct": float, "var_dollar": float,
+                    "cvar_pct": float, "cvar_dollar": float,
+                },
+                "parametric": {
+                    "var_pct": float, "var_dollar": float,
+                    "cvar_pct": float, "cvar_dollar": float,
+                    "cf_var_pct": float, "cf_var_dollar": float,
+                },
+                "monte_carlo": {
+                    "var_pct": float, "var_dollar": float,
+                    "cvar_pct": float, "cvar_dollar": float,
+                },
             },
         }
     """
@@ -466,17 +623,22 @@ def run_var_analysis(
         normalized_prices = compute_normalized_prices(prices)
 
         _report("Finfy Math: Building dynamic variance-covariance matrices...")
-        param_pct, param_dollar = parametric_var(
-            portfolio_returns, portfolio_value, confidence_level, horizon_days
-        )
+        (
+            param_pct,
+            param_dollar,
+            param_cvar_pct,
+            param_cvar_dollar,
+            cf_var_pct,
+            cf_var_dollar,
+        ) = parametric_var(portfolio_returns, portfolio_value, confidence_level, horizon_days)
 
         _report("Finfy Math: Resampling empirical historical return distributions...")
-        hist_pct, hist_dollar = historical_var(
+        hist_pct, hist_dollar, hist_cvar_pct, hist_cvar_dollar = historical_var(
             portfolio_returns, portfolio_value, confidence_level, horizon_days
         )
 
-        _report("Finfy Math: Running Monte Carlo simulation lattice (10,000 paths)...")
-        mc_pct, mc_dollar = monte_carlo_var(
+        _report("Finfy Math: Running correlated Monte Carlo GBM path simulation (10,000 paths)...")
+        mc_pct, mc_dollar, mc_cvar_pct, mc_cvar_dollar = monte_carlo_var(
             returns,
             weights_arr,
             portfolio_value,
@@ -511,9 +673,26 @@ def run_var_analysis(
                     "confidence_level": float(confidence_level),
                 },
                 "risk_metrics": {
-                    "historical": {"var_pct": hist_pct, "var_dollar": hist_dollar},
-                    "parametric": {"var_pct": param_pct, "var_dollar": param_dollar},
-                    "monte_carlo": {"var_pct": mc_pct, "var_dollar": mc_dollar},
+                    "historical": {
+                        "var_pct": hist_pct,
+                        "var_dollar": hist_dollar,
+                        "cvar_pct": hist_cvar_pct,
+                        "cvar_dollar": hist_cvar_dollar,
+                    },
+                    "parametric": {
+                        "var_pct": param_pct,
+                        "var_dollar": param_dollar,
+                        "cvar_pct": param_cvar_pct,
+                        "cvar_dollar": param_cvar_dollar,
+                        "cf_var_pct": cf_var_pct,
+                        "cf_var_dollar": cf_var_dollar,
+                    },
+                    "monte_carlo": {
+                        "var_pct": mc_pct,
+                        "var_dollar": mc_dollar,
+                        "cvar_pct": mc_cvar_pct,
+                        "cvar_dollar": mc_cvar_dollar,
+                    },
                 },
             }
         )
